@@ -1,12 +1,16 @@
 """アプリケーション設定。環境変数 / .env から読み込む。"""
 from functools import lru_cache
+from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# backend-core/ 直下の.envを指す絶対パス。実行時のカレントディレクトリに依存しないようにする。
+_ENV_FILE = Path(__file__).resolve().parent.parent.parent / ".env"
 
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=_ENV_FILE,
         env_file_encoding="utf-8",
         extra="ignore",
     )
