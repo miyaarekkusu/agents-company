@@ -1,9 +1,11 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.api.tasks import router as tasks_router
 from app.core.config import settings
 
 app = FastAPI(title=settings.APP_NAME)
+app.include_router(tasks_router, prefix="/api")
 
 app.add_middleware(
     CORSMiddleware,
