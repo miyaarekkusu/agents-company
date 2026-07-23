@@ -82,13 +82,17 @@ ai-company/
     ├── .env.example
     ├── alembic/                # DBマイグレーション
     ├── alembic.ini
+    ├── scripts/
+    │   └── chat.py              # サーバー起動不要、ターミナルでLangGraphのグラフと対話確認するCLI
     └── app/
         ├── main.py
-        ├── core/                # 設定・DB接続
-        ├── api/                 # ルーター
+        ├── core/                # 設定（config.py）・DB接続（database.py）
+        ├── api/                 # ルーター（tasks.py など）
         ├── models/              # SQLAlchemyモデル
-        ├── schemas/             # Pydanticスキーマ
-        └── services/            # エージェント・オーケストレーション等のロジック
+        ├── schemas/             # Pydanticスキーマ（task.py など）
+        └── services/            # エージェント・オーケストレーション層
+            ├── llm.py            # 外部LLM API呼び出しの薄いラッパー（現状DeepSeekのみ）
+            └── graph.py          # LangGraphのState/Node/Edge定義とcompile済みグラフ
 ```
 
 - **frontend/**: React (Vite + TypeScript) 一式。バックエンドのコードは置かない。
@@ -105,9 +109,11 @@ ai-company/
   2. 会議（複数エージェントでの相談・設計担当の割り振り）
   3. 作業（役割分担に基づく実行）
   4. 完了報告・報酬計算
+- オーケストレーション基盤には **LangGraph** を採用する（CrewAI・自前実装と比較検討の上で決定。ストリーミング・永続化・human-in-the-loopが標準機能として揃っており、LangChain本体なしでノード内から外部LLM APIを直接呼べるため）。`backend-core/app/services/graph.py` にState/Node/Edgeを定義する。現状は「1エージェント・1ノード・DB永続化なし」の最小構成（歩行スケルトン）のみ実装済み。会議室での複数エージェント分岐（条件付きEdge）・checkpointerによるDB永続化・WebSocket/SSEでのストリーミング配信は未実装（次のイテレーションで対応）。
 - 会議・作業の様子をリアルタイムに可視化するため、WebSocket または SSE でのストリーミングを検討する。
-- 各エージェントのキャラクター設定（口調・性格）はバックエンド側でプロンプト/システムメッセージとして管理し、フロントエンドは表示に専念する。
-- LLM呼び出しはプロバイダ抽象化レイヤーを設け、エージェントごとに Claude / OpenAI / DeepSeek / Gemini を切り替えられるようにする。
+- 各エージェントのキャラクター設定（口調・性格）はバックエンド側でプロンプト/システムメッセージとして管理し、フロントエンドは表示に専念する。**systemプロンプトには「あなたは◯◯という名前の、DeepSeekベースのエージェントです」のように自己認識を明示的に含めること。** 実際にDeepSeekへ自己紹介させたところ、自己認識が学習データの影響で混乱し「Anthropicが開発したClaudeです」のように別のAIを名乗った事例があるため（`memo/バックエンド確認方法.md`参照）。
+- LLM呼び出しはプロバイダ抽象化レイヤーを設け、エージェントごとに Claude / OpenAI / DeepSeek / Gemini を切り替えられるようにする。現状 `app/services/llm.py` にはDeepSeek呼び出しのみ実装済み（OpenAI互換APIのため `openai` SDKで `base_url` を差し替えて利用）。他プロバイダを追加する際もこのファイルに並べて実装する。
+- `app/core/config.py` の `.env` 読み込みは、実行時のカレントディレクトリに依存しないよう `backend-core/.env` への絶対パスを明示的に指定している（`scripts/`配下のツールなどをどこから実行しても動くようにするため）。新しく設定値を読み込む処理を追加する際もこの方式を踏襲すること。
 
 ## 開発ワークフロー（タスクとエージェントの分割）
 
