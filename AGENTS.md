@@ -61,6 +61,8 @@
 ```
 ai-company/
 ├── AGENTS.md
+├── DATABASE.md                  # DBスキーマ設計のリファレンス（ER図・テーブル定義・説明）
+├── FRONTEND.md                  # フロントエンドの画面実装タスク一覧
 ├── README.md
 ├── docker-compose.yml
 ├── agents/                      # ゲーム内AIエージェントのペルソナ定義・システムプロンプト等
@@ -115,10 +117,18 @@ ai-company/
   4. 完了報告・報酬計算
 - オーケストレーション基盤には **LangGraph** を採用する（CrewAI・自前実装と比較検討の上で決定。ストリーミング・永続化・human-in-the-loopが標準機能として揃っており、LangChain本体なしでノード内から外部LLM APIを直接呼べるため）。`backend-core/app/services/graph.py` にState/Node/Edgeを定義する。現状は「1ノード・DB永続化なし」の構成で、社長が指定した`agent_id`（`TaskState`に含まれる）に応じて、`app/services/agents_registry.py`から該当エージェントの情報を引き、`app/services/persona.py`でそのペルソナのシステムプロンプトを読み込んでLLMを呼ぶ作りになっている。会議室での複数エージェント分岐（条件付きEdge）・checkpointerによるDB永続化・WebSocket/SSEでのストリーミング配信は未実装（次のイテレーションで対応）。
 - **エージェントの登録管理（`app/services/agents_registry.py`）**: エージェントが少数のうちはDBを使わず、Pythonの静的な辞書（`agent_id` → `AgentInfo(name, persona_file)`）で管理する方針。DBスキーマが設計され次第、ここをDBテーブル参照に置き換える想定（それまではこのファイルが「エージェント一覧」の唯一の情報源）。`GET /api/agents`でこの一覧を返し、`POST /api/tasks`は`agent_id`を必須項目として受け取って該当エージェントに処理を委譲する。未登録の`agent_id`が指定された場合は`app/api/tasks.py`が404を返す。
-- 会議・作業の様子をリアルタイムに可視化するため、WebSocket または SSE でのストリーミングを検討する。
+- **ストリーミング配信（会議・作業内容のリアルタイム表示）**: まずは **SSE（Server-Sent Events）** を採用する方針で決定（バックエンド→フロントエンドへの一方向配信で当面は足りるため、FastAPI側の実装がシンプルになる）。将来「社長が生成中に割り込む・中断する」等、双方向のやり取りが必要になった時点でWebSocketへの移行を検討する（複数エージェントの同時作業を1接続で多重化しやすい利点もある）。配信するイベントは主に3種を想定: ①ノード開始/終了（どのエージェントが動き出したか）、②LLMのトークン単位のストリーミング（コード等が生成される様子をリアルタイム表示）、③エージェントの発言・提案の確定。実装には、`app/services/llm.py`の`call_deepseek`を`stream=True`対応にすること、`app/services/graph.py`側は`.astream()`/`.astream_events()`を使うことが必要になる（いずれも未実装、ロードマップ参照）。
 - 各エージェントのキャラクター設定（口調・性格）はバックエンド側でプロンプト/システムメッセージとして管理し、フロントエンドは表示に専念する。**systemプロンプトには「あなたは◯◯という名前の、DeepSeekベースのエージェントです」のように自己認識を明示的に含めること。** 実際にDeepSeekへ自己紹介させたところ、自己認識が学習データの影響で混乱し「Anthropicが開発したClaudeです」のように別のAIを名乗った事例があるため（`memo/バックエンド確認方法.md`参照）。
 - LLM呼び出しはプロバイダ抽象化レイヤーを設け、エージェントごとに Claude / OpenAI / DeepSeek / Gemini を切り替えられるようにする。現状 `app/services/llm.py` にはDeepSeek呼び出しのみ実装済み（OpenAI互換APIのため `openai` SDKで `base_url` を差し替えて利用）。他プロバイダを追加する際もこのファイルに並べて実装する。
 - `app/core/config.py` の `.env` 読み込みは、実行時のカレントディレクトリに依存しないよう `backend-core/.env` への絶対パスを明示的に指定している（`scripts/`配下のツールなどをどこから実行しても動くようにするため）。新しく設定値を読み込む処理を追加する際もこの方式を踏襲すること。
+
+## DB設計
+
+DBスキーマ（ER図・テーブル定義・各テーブルの説明・決定事項・実装ステップ）は `DATABASE.md` にまとめている。エージェントが複数体に増えることを見据えた設計で、2026-07-25時点でER図・テーブル構成をレビュー済み（確定）。SQLAlchemyモデル・Alembicマイグレーションへの実装はこれから（ロードマップ参照）。DBに関する変更・追記を行う際は、AGENTS.mdではなく`DATABASE.md`を更新すること。
+
+## フロントエンド実装
+
+`frontend/`の画面実装タスク一覧（現状の実装状況・フェーズ分けしたタスク・ディレクトリ構成方針）は `FRONTEND.md` にまとめている。チームメンバーはこれを見ながら担当タスクを実装する。フロントエンドのタスクに関する変更・追記を行う際は、AGENTS.mdではなく`FRONTEND.md`を更新すること。
 
 ## 開発ワークフロー（タスクとエージェントの分割）
 
@@ -138,9 +148,16 @@ ai-company/
 ### バックエンド（エージェント・オーケストレーション）
 - [x] お題を出す際に依頼先エージェントを選択できるようにする（`GET /api/agents`で一覧取得、`POST /api/tasks`に`agent_id`を指定）。エージェントが少数の間はDB不使用、`app/services/agents_registry.py`の静的な辞書で管理。DB設計は別タスクとして後日着手。
 - [ ] 会議室での複数エージェント・役割分担（LangGraphの条件付きEdgeでの分岐）
-- [ ] WebSocket/SSEによるステップごとのリアルタイムストリーミング配信
+- [ ] リアルタイムストリーミング配信（方式・イベント設計は決定済み。詳細は「アーキテクチャ方針」節参照）
+  - [ ] `app/services/llm.py`の`call_deepseek`をstream対応にする
+  - [ ] `app/services/graph.py`を`.astream()`/`.astream_events()`対応にする
+  - [ ] SSE配信用のAPIエンドポイントを追加する
+  - [ ] フロントエンドで逐次表示するUIを実装する（双方向操作が必要になったらWebSocketへ移行）
 - [ ] LangGraph checkpointerによる状態のDB永続化（PostgreSQLとの共存設計）
-- [ ] エージェント登録情報のDB化（`agents_registry.py`の静的辞書からの移行。DBスキーマ設計後に着手）
+- [ ] エージェント登録情報のDB化（`agents_registry.py`の静的辞書から`DATABASE.md`の`agents`テーブルへの移行）
+- [ ] 会議室API実装（`meetings`/`meeting_participants`/`meeting_proposals`/`meeting_reports`のCRUD。詳細は`DATABASE.md`参照）
+- [ ] 成果物API実装（`artifacts`。Webサイト/レポート/企画案の保存・簡易プレビュー表示）
+- [ ] メールスレッドAPI・外部メール送受信連携の設計・実装（`DATABASE.md`の`email_threads`/`email_messages`参照）
 - [ ] 完了報告・報酬計算ロジック
 
 ### エージェント・スキル定義
@@ -150,13 +167,13 @@ ai-company/
 - [ ] DeepSeek以外のプロバイダ対応（Claude / OpenAI / Gemini、`app/services/llm.py`に追加）
 
 ### フロントエンド
-- [ ] 社長室・会議室・作業室の3部屋のUI実装
-- [ ] 新規エージェント採用（雇用）フロー
-- [ ] 会議・作業の様子をリアルタイム表示する画面（バックエンドのストリーミング実装と対になる）
+- [ ] 詳細なタスク一覧は `FRONTEND.md` を参照（フェーズA: 画面・操作の実装／フェーズB: バックエンド結合。着手・完了の管理もそちらで行う）
 
 ### 運用・その他
 - [ ] コミット・ブランチ運用ルールの明文化
-- [ ] 詳細なDBスキーマ・API設計の確定
+- [x] DBスキーマ・ER図をレビューし、`DATABASE.md`として確定済み（2026-07-25）
+- [ ] `DATABASE.md`の内容をSQLAlchemyモデル・Alembicマイグレーションとして実装（`backend-core/app/models/`）
+- [ ] `ai_models`・`roles`・`skills`の初期データ投入（seed）
 
 ## 開発時の注意
 
