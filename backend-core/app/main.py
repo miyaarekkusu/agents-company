@@ -1,11 +1,17 @@
+"""役割: FastAPIアプリのエントリポイント。ルーター登録・CORS設定・ヘルスチェックのみを担当する。
+
+各エンドポイントの実処理はここに書かず、`app/api/`配下のルーターに実装し、ここではinclude_routerするだけにする。
+"""
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.api.agents import router as agents_router
 from app.api.tasks import router as tasks_router
 from app.core.config import settings
 
 app = FastAPI(title=settings.APP_NAME)
 app.include_router(tasks_router, prefix="/api")
+app.include_router(agents_router, prefix="/api")
 
 app.add_middleware(
     CORSMiddleware,
@@ -18,4 +24,5 @@ app.add_middleware(
 
 @app.get("/health")
 async def health() -> dict[str, str]:
+    """Docker/venvどちらでもサーバーが起動しているかを確認するための疎通確認用エンドポイント。"""
     return {"status": "ok"}

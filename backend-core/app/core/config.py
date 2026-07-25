@@ -1,4 +1,8 @@
-"""アプリケーション設定。環境変数 / .env から読み込む。"""
+"""役割: アプリケーション全体の設定値を集約する。環境変数 / .env から読み込む。
+
+DBのURLやLLM各社のAPIキーなど、他のファイルから使う設定値はすべてここに定義し、
+利用側は`from app.core.config import settings`で参照する（os.environを直接読まない）。
+"""
 from functools import lru_cache
 from pathlib import Path
 
