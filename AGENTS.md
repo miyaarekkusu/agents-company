@@ -40,6 +40,7 @@
 - **バックエンドエージェント**: 熱血でマッチョなエンジニア。「重いデータ処理は俺の筋肉とサーバーで支える！」というパワー系。
 - **フロントエンドエージェント**: ドジっ子。デザインセンスは抜群だが抜けている。「完璧なUIができました！あ、ボタンのリンク繋ぎ忘れた…」。
 - **料理系エージェント**: 超真面目。几帳面で論理的。「必要なカロリーと栄養素の要件定義から入ります」と堅苦しく進める。
+- **ひらめきポン太（アイデア出しエージェント）**: 発想力豊かで自由奔放、ノリが軽くテンション高め。「〜っしょ！」「〜じゃん！」が口癖。社長のお題に対して複数のアイデアをポンポン出す担当。実装済み（`agents/idea_agent.md`にペルソナ・システムプロンプト定義あり）。
 
 ## 技術スタック
 
@@ -63,6 +64,7 @@ ai-company/
 ├── README.md
 ├── docker-compose.yml
 ├── agents/                      # ゲーム内AIエージェントのペルソナ定義・システムプロンプト等
+│   └── idea_agent.md            # アイデア出しエージェント（ひらめきポン太）のキャラクター設定・システムプロンプト
 ├── skills/                      # ゲーム内エージェントが使用する「スキル」の定義
 ├── memo/                        # 開発メモ等
 ├── frontend/                   # React（Vite + TypeScript）
@@ -87,12 +89,14 @@ ai-company/
     └── app/
         ├── main.py
         ├── core/                # 設定（config.py）・DB接続（database.py）
-        ├── api/                 # ルーター（tasks.py など）
+        ├── api/                 # ルーター（tasks.py, agents.py など）
         ├── models/              # SQLAlchemyモデル
-        ├── schemas/             # Pydanticスキーマ（task.py など）
+        ├── schemas/             # Pydanticスキーマ（task.py, agent.py など）
         └── services/            # エージェント・オーケストレーション層
-            ├── llm.py            # 外部LLM API呼び出しの薄いラッパー（現状DeepSeekのみ）
-            └── graph.py          # LangGraphのState/Node/Edge定義とcompile済みグラフ
+            ├── llm.py            # 外部LLM API呼び出しの薄いラッパー（現状DeepSeekのみ。system_prompt指定でキャラクター性を付与可能）
+            ├── persona.py        # agents/配下のMarkdownからシステムプロンプト本文を抽出するローダー
+            ├── agents_registry.py # 登録済みエージェント一覧（DBなし・静的な辞書で管理。agent_id/name/persona_file）
+            └── graph.py          # LangGraphのState/Node/Edge定義とcompile済みグラフ（agent_idで依頼先エージェントを選択）
 ```
 
 - **frontend/**: React (Vite + TypeScript) 一式。バックエンドのコードは置かない。
@@ -109,7 +113,8 @@ ai-company/
   2. 会議（複数エージェントでの相談・設計担当の割り振り）
   3. 作業（役割分担に基づく実行）
   4. 完了報告・報酬計算
-- オーケストレーション基盤には **LangGraph** を採用する（CrewAI・自前実装と比較検討の上で決定。ストリーミング・永続化・human-in-the-loopが標準機能として揃っており、LangChain本体なしでノード内から外部LLM APIを直接呼べるため）。`backend-core/app/services/graph.py` にState/Node/Edgeを定義する。現状は「1エージェント・1ノード・DB永続化なし」の最小構成（歩行スケルトン）のみ実装済み。会議室での複数エージェント分岐（条件付きEdge）・checkpointerによるDB永続化・WebSocket/SSEでのストリーミング配信は未実装（次のイテレーションで対応）。
+- オーケストレーション基盤には **LangGraph** を採用する（CrewAI・自前実装と比較検討の上で決定。ストリーミング・永続化・human-in-the-loopが標準機能として揃っており、LangChain本体なしでノード内から外部LLM APIを直接呼べるため）。`backend-core/app/services/graph.py` にState/Node/Edgeを定義する。現状は「1ノード・DB永続化なし」の構成で、社長が指定した`agent_id`（`TaskState`に含まれる）に応じて、`app/services/agents_registry.py`から該当エージェントの情報を引き、`app/services/persona.py`でそのペルソナのシステムプロンプトを読み込んでLLMを呼ぶ作りになっている。会議室での複数エージェント分岐（条件付きEdge）・checkpointerによるDB永続化・WebSocket/SSEでのストリーミング配信は未実装（次のイテレーションで対応）。
+- **エージェントの登録管理（`app/services/agents_registry.py`）**: エージェントが少数のうちはDBを使わず、Pythonの静的な辞書（`agent_id` → `AgentInfo(name, persona_file)`）で管理する方針。DBスキーマが設計され次第、ここをDBテーブル参照に置き換える想定（それまではこのファイルが「エージェント一覧」の唯一の情報源）。`GET /api/agents`でこの一覧を返し、`POST /api/tasks`は`agent_id`を必須項目として受け取って該当エージェントに処理を委譲する。未登録の`agent_id`が指定された場合は`app/api/tasks.py`が404を返す。
 - 会議・作業の様子をリアルタイムに可視化するため、WebSocket または SSE でのストリーミングを検討する。
 - 各エージェントのキャラクター設定（口調・性格）はバックエンド側でプロンプト/システムメッセージとして管理し、フロントエンドは表示に専念する。**systemプロンプトには「あなたは◯◯という名前の、DeepSeekベースのエージェントです」のように自己認識を明示的に含めること。** 実際にDeepSeekへ自己紹介させたところ、自己認識が学習データの影響で混乱し「Anthropicが開発したClaudeです」のように別のAIを名乗った事例があるため（`memo/バックエンド確認方法.md`参照）。
 - LLM呼び出しはプロバイダ抽象化レイヤーを設け、エージェントごとに Claude / OpenAI / DeepSeek / Gemini を切り替えられるようにする。現状 `app/services/llm.py` にはDeepSeek呼び出しのみ実装済み（OpenAI互換APIのため `openai` SDKで `base_url` を差し替えて利用）。他プロバイダを追加する際もこのファイルに並べて実装する。
@@ -126,7 +131,33 @@ ai-company/
 - **依頼されていない変更を勝手に行わない。** 担当外のファイル・フォルダ・設定を、良かれと思って推測で修正・削除・追加しないこと。
 - 追加で必要と思われる変更に気づいた場合は、先に報告し、実施前に確認を取ってから対応すること。
 
+## 今後の実装予定（ロードマップ）
+
+今後着手する機能をここで管理する。着手・完了したら該当項目にチェックを入れる（または削除し、`memo/変更履歴.md`に実施内容を記録する）。新しくやりたいことが決まったら、都度この一覧に追記すること。
+
+### バックエンド（エージェント・オーケストレーション）
+- [x] お題を出す際に依頼先エージェントを選択できるようにする（`GET /api/agents`で一覧取得、`POST /api/tasks`に`agent_id`を指定）。エージェントが少数の間はDB不使用、`app/services/agents_registry.py`の静的な辞書で管理。DB設計は別タスクとして後日着手。
+- [ ] 会議室での複数エージェント・役割分担（LangGraphの条件付きEdgeでの分岐）
+- [ ] WebSocket/SSEによるステップごとのリアルタイムストリーミング配信
+- [ ] LangGraph checkpointerによる状態のDB永続化（PostgreSQLとの共存設計）
+- [ ] エージェント登録情報のDB化（`agents_registry.py`の静的辞書からの移行。DBスキーマ設計後に着手）
+- [ ] 完了報告・報酬計算ロジック
+
+### エージェント・スキル定義
+- [x] `agents/`フォルダの実データ化 第一弾: アイデア出しエージェント（ひらめきポン太）を実装済み（`agents/idea_agent.md` + `app/services/persona.py`）。他のキャラクター（バックエンド・フロントエンド・料理系など）は未実装。
+- [ ] 2体目以降のエージェント追加（`agents/`にペルソナファイルを追加し、`app/services/agents_registry.py`の`AGENT_REGISTRY`に登録するだけで追加できる構成になっている）
+- [ ] `skills/`フォルダの実データ化（役割分担・コード生成・レビュー等の能力単位の定義）
+- [ ] DeepSeek以外のプロバイダ対応（Claude / OpenAI / Gemini、`app/services/llm.py`に追加）
+
+### フロントエンド
+- [ ] 社長室・会議室・作業室の3部屋のUI実装
+- [ ] 新規エージェント採用（雇用）フロー
+- [ ] 会議・作業の様子をリアルタイム表示する画面（バックエンドのストリーミング実装と対になる）
+
+### 運用・その他
+- [ ] コミット・ブランチ運用ルールの明文化
+- [ ] 詳細なDBスキーマ・API設計の確定
+
 ## 開発時の注意
 
 - 本ファイルはプロジェクト初期段階のまとめであり、詳細なDBスキーマ・API設計・ディレクトリ構成は未確定。実装を始める際はこのAGENTS.mdを更新しながら進めること。
-- コミット・ブランチ運用ルールは今後追記予定。

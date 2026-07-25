@@ -1,4 +1,9 @@
-"""SQLAlchemy(非同期)のエンジン/セッション設定（asyncpg経由でPostgreSQLに接続）。"""
+"""役割: SQLAlchemy(非同期)のエンジン/セッション設定（asyncpg経由でPostgreSQLに接続）。
+
+DBモデル（`app/models/`配下）から使う`Base`と、FastAPIのエンドポイントで
+`Depends(get_db)`として使うセッション取得関数を提供する。
+LangGraphの状態(State)とは別物で、こちらは「DBに保存するデータ」を扱う層。
+"""
 from collections.abc import AsyncGenerator
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
