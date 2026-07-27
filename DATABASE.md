@@ -2,7 +2,9 @@
 
 本ファイルは `agents-company` のDBスキーマ設計のリファレンスです。エージェントが複数体に増えることを見据えて設計しました。
 
-**ステータス**: ER図・テーブル構成は2026-07-25時点でレビュー済み（確定）。SQLAlchemyモデル・Alembicマイグレーションへの実装はこれから（詳細は本ファイル末尾「今後の実装ステップ」、進捗管理は`AGENTS.md`の「今後の実装予定（ロードマップ）」を参照）。
+**ステータス**: ER図・テーブル構成は2026-07-25時点でレビュー済み（確定）。**2026-07-27に、SQLAlchemyモデル・Alembicマイグレーション・初期データ投入（seed）・`agents_registry.py`のDB化まで実装済み**（下記「今後の実装ステップ」の1〜4）。セットアップ手順・動かし方は`memo/DB利用方法.md`を参照。残りのステップ（会議室API・成果物API・メールAPI）は未着手（進捗管理は`AGENTS.md`の「今後の実装予定（ロードマップ）」を参照）。
+
+**実装にともなう変更点**: `agents.id`はint PKのため、`POST /api/tasks`・`GET /api/agents`で使う`agent_id`はDB化前の文字列（例: `"idea_agent"`）から**数値**に変わっている。
 
 ## 前提となる主な機能
 
@@ -284,17 +286,18 @@ erDiagram
 
 ## 今後の実装ステップ
 
-1. `backend-core/app/models/`にSQLAlchemyモデルを実装する。
-2. Alembicで初期マイグレーションを作成する。
-3. `ai_models`・`roles`・`skills`の初期データ投入（seedスクリプト）を用意する。
-4. `app/services/agents_registry.py`の静的な辞書を、DB参照（`agents`テーブル）に切り替える。
-5. 会議室API（`meetings`/`meeting_participants`/`meeting_proposals`/`meeting_reports`のCRUD、および「進行中の会議は1件まで」のアプリ側チェック）を実装する。
-6. 成果物API（`artifacts`）を実装する。
-7. メールスレッドAPI・外部メール送受信システム連携（送信・受信）を設計・実装する。
+1. [x] `backend-core/app/models/`にSQLAlchemyモデルを実装する。（2026-07-27完了）
+2. [x] Alembicで初期マイグレーションを作成する。（2026-07-27完了。`alembic/versions/91ff22838ff5_初期スキーマ作成.py`）
+3. [x] `ai_models`・`roles`・`skills`の初期データ投入（seedスクリプト）を用意する。（2026-07-27完了。`backend-core/scripts/seed_db.py`）
+4. [x] `app/services/agents_registry.py`の静的な辞書を、DB参照（`agents`テーブル）に切り替える。（2026-07-27完了。`agent_id`がint化）
+5. [ ] 会議室API（`meetings`/`meeting_participants`/`meeting_proposals`/`meeting_reports`のCRUD、および「進行中の会議は1件まで」のアプリ側チェック）を実装する。
+6. [ ] 成果物API（`artifacts`）を実装する。
+7. [ ] メールスレッドAPI・外部メール送受信システム連携（送信・受信）を設計・実装する。
 
-進捗の管理は`AGENTS.md`の「今後の実装予定（ロードマップ）」で行う。
+進捗の管理は`AGENTS.md`の「今後の実装予定（ロードマップ）」で行う。セットアップ手順・動かし方は`memo/DB利用方法.md`を参照。
 
 ## 関連ドキュメント
 
 - `AGENTS.md`: プロジェクト全体のガイド・アーキテクチャ方針・開発ワークフロー。
+- `memo/DB利用方法.md`: マイグレーション・seedの実行手順、動作確認方法、トラブルシューティング。
 - `memo/変更履歴.md`: 実装が完了した際の記録先。

@@ -3,17 +3,21 @@
 エージェントの思考ロジックそのものはここには書かない。ロジックは`app/services/graph.py`（グラフの流れ）と
 `app/services/llm.py`（LLM呼び出し）に置き、ここでは「グラフを呼んで結果を返す」ことだけを行う。
 """
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.database import get_db
 from app.schemas.task import TaskRequest, TaskResult
-from app.services.agents_registry import get_agent
+from app.services import agents_registry
 from app.services.graph import graph
 
 router = APIRouter()
 
 
 @router.post("/tasks", response_model=TaskResult)
-async def create_task(request: TaskRequest) -> TaskResult:
+async def create_task(
+    request: TaskRequest, session: AsyncSession = Depends(get_db)
+) -> TaskResult:
     """社長のお題を、指定された`agent_id`のエージェントに渡すLangGraphのグラフに渡し、実行結果を返す。
 
     `request.agent_id`が未登録のエージェントIDの場合は、グラフを呼び出す前に404を返す
@@ -21,7 +25,7 @@ async def create_task(request: TaskRequest) -> TaskResult:
     `graph.ainvoke(...)`には初期状態(TaskState相当のdict)を渡す。
     グラフ内の各ノードを順に実行した後の最終状態が戻り値になる。
     """
-    if get_agent(request.agent_id) is None:
+    if await agents_registry.get_agent(session, request.agent_id) is None:
         raise HTTPException(status_code=404, detail="指定されたエージェントが見つかりません")
 
     state = await graph.ainvoke(

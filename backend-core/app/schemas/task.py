@@ -10,8 +10,8 @@ class TaskRequest(BaseModel):
     """社長がAPI経由で送る「お題」。"""
 
     task: str
-    agent_id: str
-    """どのエージェントに依頼するか（`app/services/agents_registry.py`に登録されたagent_id）。"""
+    agent_id: int
+    """どのエージェントに依頼するか（`agents.id`。`app/services/agents_registry.py`経由でDB参照する）。"""
 
 
 class TaskResult(BaseModel):
