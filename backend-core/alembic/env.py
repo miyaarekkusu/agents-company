@@ -8,7 +8,7 @@ from app.core.config import settings
 from app.core.database import Base, engine
 
 # ここでモデルをimportすると、そのテーブルがBase.metadataに登録される
-# from app.models import *  # noqa: F401,F403
+from app.models import *  # noqa: F401,F403
 
 config = context.config
 if config.config_file_name is not None:

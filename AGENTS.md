@@ -84,21 +84,22 @@ ai-company/
     ├── Dockerfile
     ├── pyproject.toml
     ├── .env.example
-    ├── alembic/                # DBマイグレーション
+    ├── alembic/                # DBマイグレーション（versions/に初期スキーマ作成マイグレーションあり）
     ├── alembic.ini
     ├── scripts/
-    │   └── chat.py              # サーバー起動不要、ターミナルでLangGraphのグラフと対話確認するCLI
+    │   ├── chat.py              # サーバー起動不要、ターミナルでLangGraphのグラフと対話確認するCLI
+    │   └── seed_db.py           # roles/ai_models/skills/agentsへの初期データ投入（再実行安全）
     └── app/
         ├── main.py
         ├── core/                # 設定（config.py）・DB接続（database.py）
         ├── api/                 # ルーター（tasks.py, agents.py など）
-        ├── models/              # SQLAlchemyモデル
+        ├── models/              # SQLAlchemyモデル（DATABASE.mdの全13テーブルに対応。実装済み）
         ├── schemas/             # Pydanticスキーマ（task.py, agent.py など）
         └── services/            # エージェント・オーケストレーション層
             ├── llm.py            # 外部LLM API呼び出しの薄いラッパー（現状DeepSeekのみ。system_prompt指定でキャラクター性を付与可能）
-            ├── persona.py        # agents/配下のMarkdownからシステムプロンプト本文を抽出するローダー
-            ├── agents_registry.py # 登録済みエージェント一覧（DBなし・静的な辞書で管理。agent_id/name/persona_file）
-            └── graph.py          # LangGraphのState/Node/Edge定義とcompile済みグラフ（agent_idで依頼先エージェントを選択）
+            ├── persona.py        # agents/配下のMarkdownからシステムプロンプト本文を抽出するローダー（現在はscripts/seed_db.py等の初期データ投入専用）
+            ├── agents_registry.py # 登録済みエージェント一覧をDBの`agents`テーブルから取得する（DB化済み。agent_idはint）
+            └── graph.py          # LangGraphのState/Node/Edge定義とcompile済みグラフ（agent_id(int)でDBから依頼先エージェントを取得）
 ```
 
 - **frontend/**: React (Vite + TypeScript) 一式。バックエンドのコードは置かない。
@@ -116,7 +117,7 @@ ai-company/
   3. 作業（役割分担に基づく実行）
   4. 完了報告・報酬計算
 - オーケストレーション基盤には **LangGraph** を採用する（CrewAI・自前実装と比較検討の上で決定。ストリーミング・永続化・human-in-the-loopが標準機能として揃っており、LangChain本体なしでノード内から外部LLM APIを直接呼べるため）。`backend-core/app/services/graph.py` にState/Node/Edgeを定義する。現状は「1ノード・DB永続化なし」の構成で、社長が指定した`agent_id`（`TaskState`に含まれる）に応じて、`app/services/agents_registry.py`から該当エージェントの情報を引き、`app/services/persona.py`でそのペルソナのシステムプロンプトを読み込んでLLMを呼ぶ作りになっている。会議室での複数エージェント分岐（条件付きEdge）・checkpointerによるDB永続化・WebSocket/SSEでのストリーミング配信は未実装（次のイテレーションで対応）。
-- **エージェントの登録管理（`app/services/agents_registry.py`）**: エージェントが少数のうちはDBを使わず、Pythonの静的な辞書（`agent_id` → `AgentInfo(name, persona_file)`）で管理する方針。DBスキーマが設計され次第、ここをDBテーブル参照に置き換える想定（それまではこのファイルが「エージェント一覧」の唯一の情報源）。`GET /api/agents`でこの一覧を返し、`POST /api/tasks`は`agent_id`を必須項目として受け取って該当エージェントに処理を委譲する。未登録の`agent_id`が指定された場合は`app/api/tasks.py`が404を返す。
+- **エージェントの登録管理（`app/services/agents_registry.py`）**: DBの`agents`テーブルを参照する（2026-07-27にDB化済み）。`get_agent(session, agent_id)`/`list_agents(session)`はいずれも非同期でDBを問い合わせる。**`agent_id`はDBの`agents.id`に対応する数値（int）**（DB化前は文字列だったため、API呼び出し側は注意すること）。`GET /api/agents`でこの一覧を返し、`POST /api/tasks`は`agent_id`（int）を必須項目として受け取って該当エージェントに処理を委譲する。未登録の`agent_id`が指定された場合は`app/api/tasks.py`が404を返す。エージェントのペルソナ（`system_prompt`）は`agents`テーブルのカラムに直接保存されており、`app/services/persona.py`によるMarkdown読み込みは`scripts/seed_db.py`等の初期データ投入時のみ使う。
 - **ストリーミング配信（会議・作業内容のリアルタイム表示）**: まずは **SSE（Server-Sent Events）** を採用する方針で決定（バックエンド→フロントエンドへの一方向配信で当面は足りるため、FastAPI側の実装がシンプルになる）。将来「社長が生成中に割り込む・中断する」等、双方向のやり取りが必要になった時点でWebSocketへの移行を検討する（複数エージェントの同時作業を1接続で多重化しやすい利点もある）。配信するイベントは主に3種を想定: ①ノード開始/終了（どのエージェントが動き出したか）、②LLMのトークン単位のストリーミング（コード等が生成される様子をリアルタイム表示）、③エージェントの発言・提案の確定。実装には、`app/services/llm.py`の`call_deepseek`を`stream=True`対応にすること、`app/services/graph.py`側は`.astream()`/`.astream_events()`を使うことが必要になる（いずれも未実装、ロードマップ参照）。
 - 各エージェントのキャラクター設定（口調・性格）はバックエンド側でプロンプト/システムメッセージとして管理し、フロントエンドは表示に専念する。**systemプロンプトには「あなたは◯◯という名前の、DeepSeekベースのエージェントです」のように自己認識を明示的に含めること。** 実際にDeepSeekへ自己紹介させたところ、自己認識が学習データの影響で混乱し「Anthropicが開発したClaudeです」のように別のAIを名乗った事例があるため（`memo/バックエンド確認方法.md`参照）。
 - LLM呼び出しはプロバイダ抽象化レイヤーを設け、エージェントごとに Claude / OpenAI / DeepSeek / Gemini を切り替えられるようにする。現状 `app/services/llm.py` にはDeepSeek呼び出しのみ実装済み（OpenAI互換APIのため `openai` SDKで `base_url` を差し替えて利用）。他プロバイダを追加する際もこのファイルに並べて実装する。
@@ -124,7 +125,7 @@ ai-company/
 
 ## DB設計
 
-DBスキーマ（ER図・テーブル定義・各テーブルの説明・決定事項・実装ステップ）は `DATABASE.md` にまとめている。エージェントが複数体に増えることを見据えた設計で、2026-07-25時点でER図・テーブル構成をレビュー済み（確定）。SQLAlchemyモデル・Alembicマイグレーションへの実装はこれから（ロードマップ参照）。DBに関する変更・追記を行う際は、AGENTS.mdではなく`DATABASE.md`を更新すること。
+DBスキーマ（ER図・テーブル定義・各テーブルの説明・決定事項・実装ステップ）は `DATABASE.md` にまとめている。エージェントが複数体に増えることを見据えた設計で、2026-07-25時点でER図・テーブル構成をレビュー済み（確定）。**2026-07-27にSQLAlchemyモデル・Alembicマイグレーション・初期データ投入（seed）・エージェント登録情報のDB化まで実装済み**（手順・動かし方は`memo/DB利用方法.md`参照）。会議室API・成果物API・メールAPI等は未実装（ロードマップ参照）。DBに関する変更・追記を行う際は、AGENTS.mdではなく`DATABASE.md`を更新すること。
 
 ## フロントエンド実装
 
@@ -146,7 +147,7 @@ DBスキーマ（ER図・テーブル定義・各テーブルの説明・決定�
 今後着手する機能をここで管理する。着手・完了したら該当項目にチェックを入れる（または削除し、`memo/変更履歴.md`に実施内容を記録する）。新しくやりたいことが決まったら、都度この一覧に追記すること。
 
 ### バックエンド（エージェント・オーケストレーション）
-- [x] お題を出す際に依頼先エージェントを選択できるようにする（`GET /api/agents`で一覧取得、`POST /api/tasks`に`agent_id`を指定）。エージェントが少数の間はDB不使用、`app/services/agents_registry.py`の静的な辞書で管理。DB設計は別タスクとして後日着手。
+- [x] お題を出す際に依頼先エージェントを選択できるようにする（`GET /api/agents`で一覧取得、`POST /api/tasks`に`agent_id`を指定）。2026-07-27にDB化済み（`agent_id`はint）。
 - [ ] 会議室での複数エージェント・役割分担（LangGraphの条件付きEdgeでの分岐）
 - [ ] リアルタイムストリーミング配信（方式・イベント設計は決定済み。詳細は「アーキテクチャ方針」節参照）
   - [ ] `app/services/llm.py`の`call_deepseek`をstream対応にする
@@ -154,17 +155,17 @@ DBスキーマ（ER図・テーブル定義・各テーブルの説明・決定�
   - [ ] SSE配信用のAPIエンドポイントを追加する
   - [ ] フロントエンドで逐次表示するUIを実装する（双方向操作が必要になったらWebSocketへ移行）
 - [ ] LangGraph checkpointerによる状態のDB永続化（PostgreSQLとの共存設計）
-- [ ] エージェント登録情報のDB化（`agents_registry.py`の静的辞書から`DATABASE.md`の`agents`テーブルへの移行）
+- [x] エージェント登録情報のDB化（`agents_registry.py`の静的辞書から`agents`テーブル参照へ移行済み。2026-07-27）
 - [ ] 会議室API実装（`meetings`/`meeting_participants`/`meeting_proposals`/`meeting_reports`のCRUD。詳細は`DATABASE.md`参照）
 - [ ] 成果物API実装（`artifacts`。Webサイト/レポート/企画案の保存・簡易プレビュー表示）
 - [ ] メールスレッドAPI・外部メール送受信連携の設計・実装（`DATABASE.md`の`email_threads`/`email_messages`参照）
 - [ ] 完了報告・報酬計算ロジック
 
 ### エージェント・スキル定義
-- [x] `agents/`フォルダの実データ化 第一弾: アイデア出しエージェント（ひらめきポン太）を実装済み（`agents/idea_agent.md` + `app/services/persona.py`）。他のキャラクター（バックエンド・フロントエンド・料理系など）は未実装。
-- [ ] 2体目以降のエージェント追加（`agents/`にペルソナファイルを追加し、`app/services/agents_registry.py`の`AGENT_REGISTRY`に登録するだけで追加できる構成になっている）
-- [ ] `skills/`フォルダの実データ化（役割分担・コード生成・レビュー等の能力単位の定義）
-- [ ] DeepSeek以外のプロバイダ対応（Claude / OpenAI / Gemini、`app/services/llm.py`に追加）
+- [x] `agents/`フォルダの実データ化 第一弾: アイデア出しエージェント（ひらめきポン太）を実装済み（`agents/idea_agent.md`。system_promptはDBの`agents`テーブルにも投入済み）。他のキャラクター（バックエンド・フロントエンド・料理系など）は未実装。
+- [ ] 2体目以降のエージェント追加（`agents/`にペルソナファイルを追加し、`scripts/seed_db.py`に投入データを追記して`python scripts/seed_db.py`を再実行するだけで追加できる構成になっている）
+- [ ] `skills/`フォルダの実データ化（現状`ai_models`/`skills`テーブルには仮データのみ投入済み。実データ化はこれから）
+- [ ] DeepSeek以外のプロバイダ対応（Claude / OpenAI / Gemini、`app/services/llm.py`に追加。`ai_models`テーブルにはclaude-opus/haikuのマスタデータのみ先行登録済み）
 
 ### フロントエンド
 - [ ] 詳細なタスク一覧は `FRONTEND.md` を参照（フェーズA: 画面・操作の実装／フェーズB: バックエンド結合。着手・完了の管理もそちらで行う）
@@ -172,8 +173,8 @@ DBスキーマ（ER図・テーブル定義・各テーブルの説明・決定�
 ### 運用・その他
 - [ ] コミット・ブランチ運用ルールの明文化
 - [x] DBスキーマ・ER図をレビューし、`DATABASE.md`として確定済み（2026-07-25）
-- [ ] `DATABASE.md`の内容をSQLAlchemyモデル・Alembicマイグレーションとして実装（`backend-core/app/models/`）
-- [ ] `ai_models`・`roles`・`skills`の初期データ投入（seed）
+- [x] `DATABASE.md`の内容をSQLAlchemyモデル・Alembicマイグレーションとして実装済み（2026-07-27。`backend-core/app/models/`・`alembic/versions/`）
+- [x] `ai_models`・`roles`・`skills`の初期データ投入（seed）を実装・実行済み（2026-07-27。`backend-core/scripts/seed_db.py`）
 
 ## 開発時の注意
 
