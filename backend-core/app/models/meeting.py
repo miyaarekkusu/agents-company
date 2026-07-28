@@ -18,7 +18,9 @@ class Meeting(Base):
     task_id: Mapped[int] = mapped_column(ForeignKey("tasks.id"))
     leader_agent_id: Mapped[int] = mapped_column(ForeignKey("agents.id"))
     status: Mapped[str] = mapped_column(String(50), default="in_progress")
-    """同時進行1件までの制約はアプリ側で担保する（DB制約は設けない）"""
+    """in_progress / completed / failed。同時進行1件までの制約はアプリ側で担保する
+    （DB制約は設けない）。`failed`はLLM呼び出し失敗等でバックグラウンド実行が
+    完了できなかった場合（`app/services/meetings.py`の`finish_meeting`参照）。"""
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -52,3 +54,5 @@ class MeetingReport(Base):
     meeting_id: Mapped[int] = mapped_column(ForeignKey("meetings.id"), unique=True)
     content: Mapped[str] = mapped_column(String)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    """社長がこのレポートを承認した日時。未承認の場合はNone（作業はまだ開始できない）。"""
