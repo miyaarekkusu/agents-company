@@ -9,6 +9,7 @@ from app.models.meeting import Meeting, MeetingParticipant, MeetingProposal, Mee
 from app.models.role import Role
 from app.models.skill import Skill
 from app.models.task import Task
+from app.models.work_session import WorkSession, WorkSessionParticipant
 
 __all__ = [
     "Agent",
@@ -24,4 +25,6 @@ __all__ = [
     "Role",
     "Skill",
     "Task",
+    "WorkSession",
+    "WorkSessionParticipant",
 ]

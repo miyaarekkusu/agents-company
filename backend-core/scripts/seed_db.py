@@ -5,6 +5,9 @@
 
 再実行安全性: 各テーブルとも「name（等の一意キー）で既存レコードの有無を確認してから
 INSERTする」方式にしているため、何度実行しても重複データは増えない。
+ただしagentsのみ、既存行が見つかった場合はスキップではなくpersonality/system_promptを
+最新の内容で上書き（UPDATE）する。これはagents/*.mdのペルソナ定義を後から調整した際に、
+再実行するだけでDBに反映できるようにするため。
 
 投入するデータの位置づけ:
 - roles: DATABASE.md / AGENTS.mdで確定している7役職。
@@ -116,22 +119,30 @@ async def seed_skills(session) -> dict[str, Skill]:
 
 
 async def seed_agents(session, roles_by_name: dict[str, Role], models_by_name: dict[str, AIModel]) -> None:
-    """agents投入（ひらめきポン太）。nameで存在チェックし、無ければ追加する。"""
+    """agents投入（ひらめきポン太）。nameで存在チェックし、無ければ追加する。
+
+    既存行が見つかった場合は、personality/system_promptを最新の内容でUPDATEする
+    （agents/idea_agent.mdのペルソナを調整した際に、再実行するだけで反映するため）。
+    """
     name = "ひらめきポン太"
+    personality = (
+        "発想力豊かで自由奔放、前向き。"
+        "落ち着いた丁寧な話し方で、社長のお題に対して複数のアイデアを簡潔に提案する担当。"
+    )
+    system_prompt = load_system_prompt("idea_agent.md")
+
     existing = await session.scalar(select(Agent).where(Agent.name == name))
     if existing is not None:
+        existing.personality = personality
+        existing.system_prompt = system_prompt
         return
 
     agent = Agent(
         name=name,
-        personality=(
-            "発想力豊かで自由奔放、ノリが軽くテンション高め。"
-            "「〜っしょ！」「〜じゃん！」が口癖。"
-            "社長のお題に対して複数のアイデアをポンポン出す担当。"
-        ),
+        personality=personality,
         role_id=roles_by_name["案出し担当"].id,
         ai_model_id=models_by_name["deepseek-v4-pro"].id,
-        system_prompt=load_system_prompt("idea_agent.md"),
+        system_prompt=system_prompt,
     )
     session.add(agent)
     await session.flush()
