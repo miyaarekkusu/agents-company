@@ -8,13 +8,18 @@
 複数のworker（担当者）がそれぞれ自分の担当パートを作成し、リーダーがそれらを1つの
 完成した成果物として統合する、という`START → run_work_node → END`の一本道グラフとして
 実装する。会議レポートがあれば（`requires_meeting=True`のお題）、その内容も踏まえて作業する。
+
+LLM呼び出しは`stream_llm`でトークン単位に受け取り、`get_stream_writer`でカスタムイベントとして
+都度流す（呼び出し元の`work.py`が`astream(..., stream_mode=["custom", "values"])`で拾い、
+生成途中の内容を`work_progress`に反映する）。
 """
 from typing import TypedDict
 
+from langgraph.config import get_stream_writer
 from langgraph.graph import END, START, StateGraph
 
 from app.models.agent import Agent
-from app.services.llm import call_llm
+from app.services.llm import stream_llm
 
 
 class WorkState(TypedDict):
@@ -46,21 +51,51 @@ async def run_work_node(state: WorkState) -> WorkState:
 
     まず`_build_context`でお題（＋あれば会議レポート）をまとめ、`state["workers"]`それぞれに
     「役割分担を踏まえて自分の担当パートを作成してください」という趣旨のプロンプトで
-    `call_llm`し、(Agent, 担当パート)のタプルのリストとして`contributions`に集約する。
-    次に、集まった全担当パートをまとめたプロンプトを`state["leader"]`に渡し、`call_llm`で
+    `stream_llm`し、(Agent, 担当パート)のタプルのリストとして`contributions`に集約する。
+    次に、集まった全担当パートをまとめたプロンプトを`state["leader"]`に渡し、`stream_llm`で
     1つの完成した成果物として統合させ`final_content`にセットする。
+
+    生成中は`get_stream_writer`で`agent_start`/`token`/`agent_end`イベントを流し、
+    呼び出し元（`work.py`）がそれを`work_progress`ストアに書き込むことで、バックグラウンド実行中でも
+    途中経過を見られるようにする。
     """
+    writer = get_stream_writer()
     context = _build_context(state)
 
+    # イベントには"role"（worker/leader）を必ず含める。リーダーはworkerと兼任することが
+    # 普通にある（同じagent_id）ため、agent_idだけでは「workerとしての担当パート」と
+    # 「リーダーとしての統合作業」を区別できない。roleを含めることで、進行状況ストア
+    # （`work_progress`）側がこの2つを別の項目として扱えるようにする。
     contributions: list[tuple[Agent, str]] = []
     for worker in state["workers"]:
+        writer({"type": "agent_start", "agent_id": worker.id, "agent_name": worker.name, "role": "worker"})
         prompt = (
             f"{context}\n\n"
             "あなたは複数人で分担してこのお題に取り組むメンバーの1人です。"
             "他のメンバーとの役割分担を意識しつつ、あなたが担当するパートを作成してください。"
         )
-        contribution = await call_llm(worker, prompt)
-        contributions.append((worker, contribution))
+        accumulated = ""
+        async for token in stream_llm(worker, prompt):
+            accumulated += token
+            writer(
+                {
+                    "type": "token",
+                    "agent_id": worker.id,
+                    "agent_name": worker.name,
+                    "role": "worker",
+                    "content": token,
+                }
+            )
+        writer(
+            {
+                "type": "agent_end",
+                "agent_id": worker.id,
+                "agent_name": worker.name,
+                "role": "worker",
+                "content": accumulated,
+            }
+        )
+        contributions.append((worker, accumulated))
 
     contributions_text = "\n\n".join(
         f"■ {agent.name}の担当パート:\n{content}" for agent, content in contributions
@@ -71,7 +106,30 @@ async def run_work_node(state: WorkState) -> WorkState:
         "統合・整理してください。重複や矛盾があれば調整し、欠けている部分があれば補ってください。"
         f"\n\n{contributions_text}"
     )
-    final_content = await call_llm(state["leader"], leader_prompt)
+    writer(
+        {"type": "agent_start", "agent_id": state["leader"].id, "agent_name": state["leader"].name, "role": "leader"}
+    )
+    final_content = ""
+    async for token in stream_llm(state["leader"], leader_prompt):
+        final_content += token
+        writer(
+            {
+                "type": "token",
+                "agent_id": state["leader"].id,
+                "agent_name": state["leader"].name,
+                "role": "leader",
+                "content": token,
+            }
+        )
+    writer(
+        {
+            "type": "agent_end",
+            "agent_id": state["leader"].id,
+            "agent_name": state["leader"].name,
+            "role": "leader",
+            "content": final_content,
+        }
+    )
 
     return {
         "task": state["task"],
@@ -93,5 +151,5 @@ def _build_work_graph():
 
 
 # アプリ起動時に一度だけ組み立てる、実行可能なグラフ本体。
-# `app/services/work.py`から`await work_graph.ainvoke({...})`の形で呼び出す。
+# `app/services/work.py`から`work_graph.astream({...}, stream_mode=["custom", "values"])`の形で呼び出す。
 work_graph = _build_work_graph()

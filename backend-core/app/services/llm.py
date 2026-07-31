@@ -5,6 +5,8 @@ LangGraphの知識は一切持たない、ただの「プロンプト文字列�
 他プロバイダ（Claude/OpenAI/Gemini）を追加する際は、`call_deepseek`と同じ形の
 `call_xxx(prompt: str) -> str`関数をここに並べて実装した上で、`call_llm`の振り分け先に加える。
 """
+from collections.abc import AsyncIterator
+
 from openai import AsyncOpenAI
 
 from app.core.config import settings
@@ -49,4 +51,37 @@ async def call_llm(agent: Agent, prompt: str) -> str:
     """
     if agent.ai_model.provider == "deepseek":
         return await call_deepseek(prompt, system_prompt=agent.system_prompt)
+    raise NotImplementedError(f"プロバイダ '{agent.ai_model.provider}' はまだ実装されていません")
+
+
+async def stream_deepseek(prompt: str, system_prompt: str | None = None) -> AsyncIterator[str]:
+    """`call_deepseek`のストリーミング版。応答をトークン単位のasyncジェネレータで返す。
+
+    作業室（`app/services/work_graph.py`）で生成途中の内容を進行状況ストアに反映するため、
+    応答が返り切るまで待たずに逐次yieldする必要があり別関数として用意した
+    （`call_deepseek`は他所（会議室）で使われているため変更しない）。
+    """
+    messages = []
+    if system_prompt is not None:
+        messages.append({"role": "system", "content": system_prompt})
+    messages.append({"role": "user", "content": prompt})
+
+    client = AsyncOpenAI(api_key=settings.DEEPSEEK_API_KEY, base_url=_DEEPSEEK_BASE_URL)
+    stream = await client.chat.completions.create(
+        model=_DEEPSEEK_MODEL,
+        messages=messages,
+        stream=True,
+    )
+    async for chunk in stream:
+        content = chunk.choices[0].delta.content
+        if content:
+            yield content
+
+
+async def stream_llm(agent: Agent, prompt: str) -> AsyncIterator[str]:
+    """`call_llm`と同じprovider振り分けのストリーミング版（`stream_deepseek`へ委譲）。"""
+    if agent.ai_model.provider == "deepseek":
+        async for token in stream_deepseek(prompt, system_prompt=agent.system_prompt):
+            yield token
+        return
     raise NotImplementedError(f"プロバイダ '{agent.ai_model.provider}' はまだ実装されていません")

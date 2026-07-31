@@ -29,8 +29,13 @@
 import asyncio
 import sys
 
+try:
+    import msvcrt  # Windows専用。作業内容のリアルタイム監視でEnterキー検知に使う。
+except ImportError:  # Windows以外では監視中のキャンセル検知は無効になる（完了時に自動終了する）
+    msvcrt = None
+
 from app.core.database import AsyncSessionLocal
-from app.services import agents_registry, availability, hiring, notifications, work
+from app.services import agents_registry, availability, hiring, notifications, work, work_progress
 from app.services.meetings import (
     approve_report,
     finish_meeting,
@@ -42,6 +47,28 @@ from app.services.meetings import (
 # Windows環境で標準入出力がUTF-8以外になる場合があるため明示的に指定する。
 sys.stdout.reconfigure(encoding="utf-8")
 sys.stdin.reconfigure(encoding="utf-8")
+
+
+def _enter_pressed() -> bool:
+    """Enterキーが押されたかを非ブロッキングで確認する（作業内容のリアルタイム監視用）。
+
+    `input()`（`_ainput`経由）は一度呼ぶとブロックし、実行中の背後のタスクが終わっても
+    途中でキャンセルできない（別スレッドで動いているOSレベルの読み取りを安全に中断する
+    手段が無い）。そのため監視ループの「Enterでやめる」判定には、コンソールの入力を
+    直接ノンブロッキングで覗ける`msvcrt`を使う。標準入力がコンソールでない場合
+    （パイプ入力等）は`OSError`になりうるため、その場合はキー検知なしとして扱う
+    （完了時に自動的にループが終わるので実害はない）。
+    """
+    if msvcrt is None:
+        return False
+    try:
+        pressed = False
+        while msvcrt.kbhit():
+            if msvcrt.getch() in (b"\r", b"\n"):
+                pressed = True
+        return pressed
+    except OSError:
+        return False
 
 
 # バックグラウンドで実行中の会議・作業タスク（finish_meeting/finish_work）を保持する。
@@ -354,11 +381,12 @@ async def approve_report_flow() -> None:
             return
         item = pending[choice - 1]
 
+        print(f"\n--- 会議レポート（{item.task.title}） ---")
+        print(item.report.content)
+        await asyncio.sleep(1)
+
         confirm = (
-            await _ainput(
-                f"「{item.task.title}」のレポート内容はメールでご確認ください。"
-                "承認して作業を割り当てられるようにしますか？ (y/N)> "
-            )
+            await _ainput("このレポートを承認して作業を割り当てられるようにしますか？ (y/N)> ")
         ).strip().lower()
         if confirm != "y":
             print("承認を見送りました。")
@@ -730,21 +758,89 @@ async def meeting_room() -> None:
 async def view_work_flow() -> None:
     print("\n--- 作業内容を確認する ---")
     async with AsyncSessionLocal() as session:
-        views = await work.list_artifacts(session)
-        if not views:
+        artifact_views = await work.list_artifacts(session)
+        in_progress_items = await work.list_in_progress_work(session)
+        if not artifact_views and not in_progress_items:
             print("まだ作業結果がありません。社長室でお題を出してみてください。")
             return
-        for i, view in enumerate(views, start=1):
-            created_at = view.artifact.created_at.strftime("%Y-%m-%d %H:%M")
-            print(f"  {i}. [{created_at}] {view.agent_name or '(不明)'} - {view.task_title or '(不明)'}")
-        choice = await _prompt_choice("番号を選択してください（0でキャンセル）> ", len(views))
+
+        # 完了・進行中を1つのリストにまとめ、日時の新しい順に並べる。
+        # 種類タグを持たせておくことで、選択後にどちらの表示・取得方法を使うか判定できる。
+        entries = [("artifact", view, view.artifact.created_at) for view in artifact_views]
+        entries += [
+            ("in_progress", item, item.work_session.created_at) for item in in_progress_items
+        ]
+        entries.sort(key=lambda e: e[2], reverse=True)
+
+        for i, (kind, item, created_at) in enumerate(entries, start=1):
+            ts = created_at.strftime("%Y-%m-%d %H:%M")
+            if kind == "artifact":
+                print(f"  {i}. [{ts}] {item.agent_name or '(不明)'} - {item.task_title or '(不明)'}")
+            else:
+                print(f"  {i}. [{ts}] {item.task_title}（進行中）")
+
+        choice = await _prompt_choice("番号を選択してください（0でキャンセル）> ", len(entries))
         if choice is None:
             print("キャンセルしました。")
             return
-        view = views[choice - 1]
+        kind, item, _ = entries[choice - 1]
 
-    print(f"\n--- {view.agent_name}の作業内容 ---\n{view.artifact.content}")
-    await asyncio.sleep(1)
+        if kind == "artifact":
+            content = item.artifact.content
+            agent_name = item.agent_name
+
+    if kind == "artifact":
+        print(f"\n--- {agent_name}の作業内容 ---\n{content}")
+        await asyncio.sleep(1)
+    else:
+        await _watch_work_progress(item.work_session.id, item.task_title)
+
+
+async def _watch_work_progress(work_session_id: int, task_title: str) -> None:
+    """進行中の作業をリアルタイムに表示し続ける（`work_progress`を1秒おきにポーリング）。
+
+    トークンが増えた分だけその場に追記していく（`print(..., end="", flush=True)`）ので、
+    ターミナル上で実際に生成されていく様子がそのまま流れて見える。作業が完了/失敗すると
+    自動的に監視を終了する。Enterキーでもいつでも監視をやめられる（`_enter_pressed`参照。
+    Windows以外の環境ではEnterでの中断は効かないが、完了時には必ず終了するので実害はない）。
+    """
+    print(f"\n--- {task_title}（進行中） ---")
+    print("リアルタイムに表示します（Enterキーでいつでも監視をやめられます）。\n")
+
+    # (agent_id, role)をキーにする。リーダーはworkerと兼任することが普通にあるため、
+    # agent_idだけで管理すると「担当パート」と「統合作業」の表示が混ざってしまう
+    # （`app/services/work_progress.py`参照）。
+    printed_keys: set[tuple[int, str]] = set()
+    shown_len: dict[tuple[int, str], int] = {}
+
+    while True:
+        progress = work_progress.get_progress(work_session_id)
+        for key, (agent_name, text) in progress.items():
+            _, role = key
+            if key not in printed_keys:
+                label = "（リーダーとして統合中）" if role == "leader" else ""
+                print(f"■ {agent_name}{label}")
+                printed_keys.add(key)
+                shown_len[key] = 0
+            new_text = text[shown_len[key]:]
+            if new_text:
+                print(new_text, end="", flush=True)
+                shown_len[key] = len(text)
+
+        async with AsyncSessionLocal() as session:
+            status = await work.get_work_session_status(session, work_session_id)
+
+        if status == "completed":
+            print("\n\n（完了しました。メニューに戻ります）")
+            break
+        if status != "in_progress":
+            print("\n\n（作業が終了しました。メニューに戻ります）")
+            break
+        if _enter_pressed():
+            print("\n\n（監視をやめました）")
+            break
+
+        await asyncio.sleep(1)
 
 
 async def work_room() -> None:

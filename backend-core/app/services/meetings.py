@@ -176,9 +176,8 @@ async def finish_meeting(meeting_id: int) -> None:
             agent_id=leader.id,
             subject=f"会議が完了しました：{task.title}",
             body=(
-                f"「{task.title}」の会議が完了し、以下のレポートが作成されました。\n\n"
-                f"--- 会議レポート ---\n{state['report']}\n\n"
-                "内容を確認の上、社長室の「レポートを確認して承認する」から承認してください。"
+                f"「{task.title}」の会議が完了し、レポートが作成されました。"
+                "社長室の「レポートを確認して承認する」からご確認ください。"
             ),
         )
         await session.commit()

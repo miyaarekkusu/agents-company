@@ -35,6 +35,7 @@ from app.models.email import EmailMessage, EmailThread
 from app.models.meeting import Meeting, MeetingParticipant, MeetingProposal, MeetingReport
 from app.models.task import Task
 from app.models.work_session import WorkSession, WorkSessionParticipant
+from app.services import work_progress
 from app.services.availability import list_busy_agent_ids
 from app.services.notifications import notify
 from app.services.work_graph import work_graph
@@ -185,6 +186,31 @@ async def has_in_progress_work(session: AsyncSession) -> bool:
     return result.first() is not None
 
 
+@dataclass
+class InProgressWork:
+    """進行中の作業（作業室の一覧表示用）。"""
+
+    work_session: WorkSession
+    task_title: str
+
+
+async def list_in_progress_work(session: AsyncSession) -> list[InProgressWork]:
+    """進行中（`in_progress`）の作業一覧を、開始日時の新しい順に返す。"""
+    result = await session.execute(
+        select(WorkSession, Task.title)
+        .join(Task, Task.id == WorkSession.task_id)
+        .where(WorkSession.status == "in_progress")
+        .order_by(WorkSession.created_at.desc())
+    )
+    return [InProgressWork(work_session=ws, task_title=title) for ws, title in result.all()]
+
+
+async def get_work_session_status(session: AsyncSession, work_session_id: int) -> str | None:
+    """該当work_sessionの現在のstatusを返す（未登録ならNone）。"""
+    ws = await session.get(WorkSession, work_session_id)
+    return ws.status if ws is not None else None
+
+
 async def start_work(
     session: AsyncSession, *, task_id: int, worker_agent_ids: list[int], leader_agent_id: int
 ) -> WorkSession:
@@ -270,8 +296,9 @@ async def finish_work(work_session_id: int) -> None:
             .where(Meeting.task_id == task.id)
         )
 
+        final_state = None
         try:
-            state = await work_graph.ainvoke(
+            async for stream_mode, chunk in work_graph.astream(
                 {
                     "task": task.description,
                     "report": report_content,
@@ -279,9 +306,33 @@ async def finish_work(work_session_id: int) -> None:
                     "leader": leader,
                     "contributions": [],
                     "final_content": "",
-                }
-            )
+                },
+                stream_mode=["custom", "values"],
+            ):
+                if stream_mode == "custom":
+                    # ノード内`get_stream_writer`が流したagent_start/token/agent_endイベント。
+                    # 進行状況ストアに反映し、社長室からの閲覧に使えるようにする。
+                    if chunk["type"] == "token":
+                        work_progress.record_token(
+                            work_session_id,
+                            chunk["agent_id"],
+                            chunk["role"],
+                            chunk["agent_name"],
+                            chunk["content"],
+                        )
+                    elif chunk["type"] == "agent_end":
+                        work_progress.record_final(
+                            work_session_id,
+                            chunk["agent_id"],
+                            chunk["role"],
+                            chunk["agent_name"],
+                            chunk["content"],
+                        )
+                elif stream_mode == "values":
+                    # ノード終了後のState全体（`final_content`確定値の取得に使う）。
+                    final_state = chunk
         except Exception as exc:  # noqa: BLE001
+            work_progress.clear_progress(work_session_id)
             work_session.status = "failed"
             task.status = "ready_for_work"
             await notify(
@@ -297,10 +348,11 @@ async def finish_work(work_session_id: int) -> None:
             await session.commit()
             return
 
+        work_progress.clear_progress(work_session_id)
         artifact = Artifact(
             task_id=task.id,
             type="proposal",
-            content=state["final_content"],
+            content=final_state["final_content"],
             created_by_agent_id=leader.id,
         )
         session.add(artifact)
