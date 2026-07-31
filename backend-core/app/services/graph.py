@@ -16,22 +16,23 @@ LangGraphは「State（状態） / Node（ノード） / Edge（エッジ）」�
   一度compileしてモジュールレベルの`graph`としてエクスポートし、呼び出し側（`app/api/tasks.py`）は
   `await graph.ainvoke(初期State)`で実行するだけでよい。
 
-今回は「社長のお題と依頼先の`agent_id`を受け取る → `agent_id`に対応するエージェントのペルソナで
-LLMを呼ぶ → 結果を返す」という`START → run_agent → END`の一本道グラフのみを実装している。
-どのエージェントを使うかは固定ではなく、リクエストごとにStateの`agent_id`を見て
-`app/services/agents_registry.py`から該当エージェントの情報を引き、
-`app/services/persona.py`でそのペルソナのシステムプロンプトを読み込む。
-会議室での複数エージェント分岐や、状態のDB永続化（checkpointer）は次のイテレーションで拡張する
-（AGENTS.md参照）。
+今回は「社長のお題と依頼先の`agent_id`を受け取る → `agent_id`に対応するエージェントとしてLLMを呼ぶ →
+結果を返す」という`START → run_agent → END`の一本道グラフのみを実装している。
+どのエージェントを使うかは固定ではなく、リクエストごとにStateの`agent_id`（DB上の`agents.id`、int）を見て
+`app/services/agents_registry.py`経由でDBの`agents`テーブルから該当エージェントを取得する。
+実際のLLM呼び出しは`app/services/llm.py`の`call_llm`に委譲しており、`agent.ai_model.provider`
+（現状は"deepseek"のみ実装済み）に応じたプロバイダへの振り分けはそちら側の責務とする
+（`app/services/persona.py`のMarkdownローダーは、初期データ投入・再シード用の`scripts/seed_db.py`
+専用となり、リクエスト処理では使わない）。会議室での複数エージェント分岐（`app/services/meeting_graph.py`
+参照）や、状態のDB永続化（checkpointer）は次のイテレーションで拡張する（AGENTS.md参照）。
 """
-from functools import lru_cache
 from typing import TypedDict
 
 from langgraph.graph import END, START, StateGraph
 
-from app.services.agents_registry import get_agent
-from app.services.llm import call_deepseek
-from app.services.persona import load_system_prompt
+from app.core.database import AsyncSessionLocal
+from app.services import agents_registry
+from app.services.llm import call_llm
 
 
 class TaskState(TypedDict):
@@ -39,20 +40,10 @@ class TaskState(TypedDict):
 
     task: str
     """社長から出されたお題（入力）。"""
-    agent_id: str
-    """社長がどのエージェントに依頼するかを表すID（`app/services/agents_registry.py`参照）。"""
+    agent_id: int
+    """社長がどのエージェントに依頼するかを表すID（`agents.id`。`app/services/agents_registry.py`参照）。"""
     result: str
     """エージェントの回答（出力）。"""
-
-
-@lru_cache(maxsize=None)
-def _load_system_prompt_cached(persona_file: str) -> str:
-    """agent_idごとのシステムプロンプトをキャッシュする。
-
-    同じエージェントへの問い合わせで毎回`agents/*.md`を読み直さずに済むよう、
-    ペルソナファイル名をキーにキャッシュする（シンプルさ優先の軽量な最適化）。
-    """
-    return load_system_prompt(persona_file)
 
 
 async def run_agent_node(state: TaskState) -> TaskState:
@@ -60,15 +51,18 @@ async def run_agent_node(state: TaskState) -> TaskState:
 
     `agent_id`が未登録の場合は`app/api/tasks.py`側でグラフ呼び出し前に弾く想定のため、
     ここでは登録済みのエージェントが渡ってくる前提でよい（念のためValueErrorで防御する）。
-    LLM呼び出しの実処理は`llm.py`に委譲し、ここでは`agents/`配下のMarkdown由来の
-    システムプロンプトを渡した上で結果をStateに詰めるだけ。
+    DBセッションは`scripts/seed_db.py`と同じパターンで、ノードの処理中だけその場で開く。
+    `call_llm`は`agent.ai_model`にアクセスするため、`session.get`だけではlazy loadになり
+    async環境では失敗しうる点に注意し、セッションを閉じる前に`ai_model`を明示的にロードしておく。
+    LLM呼び出しの実処理自体は`llm.py`の`call_llm`に委譲し、ここでは結果をStateに詰めるだけ。
     """
-    agent = get_agent(state["agent_id"])
-    if agent is None:
-        raise ValueError(f"未登録のagent_idです: {state['agent_id']}")
+    async with AsyncSessionLocal() as session:
+        agent = await agents_registry.get_agent(session, state["agent_id"])
+        if agent is None:
+            raise ValueError(f"未登録のagent_idです: {state['agent_id']}")
+        await session.refresh(agent, attribute_names=["ai_model"])
+        result = await call_llm(agent, state["task"])
 
-    system_prompt = _load_system_prompt_cached(agent.persona_file)
-    result = await call_deepseek(state["task"], system_prompt=system_prompt)
     return {"task": state["task"], "agent_id": state["agent_id"], "result": result}
 
 
