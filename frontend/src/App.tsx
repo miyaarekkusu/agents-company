@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { type Agent, INITIAL_HIRED_AGENTS } from "./mocks/agents";
 import { type Task, MOCK_TASKS, MOCK_ARTIFACTS, type Artifact, type MeetingReport } from "./mocks/tasks";
 import { type EmailThread, MOCK_EMAIL_THREADS } from "./mocks/messages";
@@ -10,6 +10,7 @@ import { ReportViewer } from "./features/report-viewer/ReportViewer";
 import { MobileChat } from "./features/mobile-chat/MobileChat";
 import { Modal } from "./components/Common/Modal";
 import { Toast, type ToastMessage } from "./components/Common/Toast";
+import { type CharacterState, type SpriteDirection } from "./components/Character/CharacterSprite";
 
 type RoomId = "president" | "meeting" | "work";
 
@@ -24,6 +25,15 @@ const ROOMS: Room[] = [
   { id: "meeting", title: "会議室", emoji: "🤝" },
   { id: "work", title: "作業室", emoji: "💻" },
 ];
+
+interface AgentPosition {
+  x: number | string;
+  y: number | string;
+  dir: SpriteDirection;
+  state: CharacterState;
+  speech?: string;
+  noTransition?: boolean;
+}
 
 function App() {
   // Navigation & States
@@ -56,6 +66,15 @@ function App() {
   // Toast Notifications
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
 
+  // Agent visual coordinates state
+  const [agentPositions, setAgentPositions] = useState<Record<number, AgentPosition>>({});
+
+  // Work Room living logs
+  const [workLogs, setWorkLogs] = useState<string[]>([
+    "[システム] 作業室が初期化されました。",
+    "[システム] 会議レポートの受信を待機中..."
+  ]);
+
   const addToast = (text: string, type: "info" | "success" = "info") => {
     setToasts((prev) => [...prev, { id: `${Date.now()}-${Math.random()}`, text, type }]);
   };
@@ -63,6 +82,111 @@ function App() {
   const removeToast = (id: string) => {
     setToasts((prev) => prev.filter((t) => t.id !== id));
   };
+
+  // Agent Walking Trigger Helper
+  const triggerAgentWalk = (
+    agentId: number,
+    start: { x: number | string; y: number | string },
+    end: { x: number | string; y: number | string },
+    duration: number,
+    finalState: CharacterState,
+    finalDir: SpriteDirection,
+    speech?: string
+  ) => {
+    // 1. Teleport to start position
+    let initialDir: SpriteDirection = "front";
+    if (typeof start.x === "number" && typeof end.x === "number") {
+      initialDir = end.x > start.x ? "right" : "left";
+    }
+
+    setAgentPositions((prev) => ({
+      ...prev,
+      [agentId]: {
+        x: start.x,
+        y: start.y,
+        dir: initialDir,
+        state: "walking",
+        noTransition: true,
+        speech,
+      }
+    }));
+
+    // 2. Start moving after a brief render delay
+    setTimeout(() => {
+      setAgentPositions((prev) => {
+        if (!prev[agentId]) return prev;
+        const startX = typeof prev[agentId].x === "number" ? (prev[agentId].x as number) : 0;
+        const endX = typeof end.x === "number" ? (end.x as number) : 0;
+        let walkDir: SpriteDirection = "right";
+        if (endX < startX) walkDir = "left";
+
+        return {
+          ...prev,
+          [agentId]: {
+            ...prev[agentId],
+            x: end.x,
+            y: end.y,
+            dir: walkDir,
+            state: "walking",
+            noTransition: false,
+          }
+        };
+      });
+    }, 50);
+
+    // 3. Set to final static state when the walk concludes
+    setTimeout(() => {
+      setAgentPositions((prev) => {
+        if (!prev[agentId]) return prev;
+        return {
+          ...prev,
+          [agentId]: {
+            ...prev[agentId],
+            state: finalState,
+            dir: finalDir,
+            noTransition: false,
+          }
+        };
+      });
+    }, duration + 50);
+  };
+
+  // Sync Positions: Init or trigger hire walk when a new agent is added
+  useEffect(() => {
+    hiredAgents.forEach((agent) => {
+      if (!agentPositions[agent.id]) {
+        // Compute spawn coordinates
+        const isInitial = agent.id === 1; // ひらめきポン太 is pre-hired
+        const targetX = 35 + (agent.id * 10) % 45;
+        const targetY = 70 + (agent.id * 5) % 15;
+
+        if (isInitial) {
+          setAgentPositions((prev) => ({
+            ...prev,
+            [agent.id]: {
+              x: targetX,
+              y: targetY,
+              dir: "front",
+              state: "idle",
+              noTransition: true,
+            }
+          }));
+        } else {
+          // Hiring spawn desk is at (x: 80%, y: 50px)
+          // Walks to idle area
+          triggerAgentWalk(
+            agent.id,
+            { x: 80, y: 50 },
+            { x: targetX, y: targetY },
+            2000,
+            "idle",
+            "front",
+            "社長！雇用ありがとうございます！"
+          );
+        }
+      }
+    });
+  }, [hiredAgents]);
 
   // Door click room-transition confirmation
   const handleRoomNavClick = (targetId: RoomId) => {
@@ -100,6 +224,31 @@ function App() {
     );
 
     addToast("会議室で会議が始まりました！", "info");
+
+    // Leader walks from left door to table head
+    triggerAgentWalk(
+      leaderId,
+      { x: -10, y: 70 },
+      { x: 50, y: 115 },
+      2000,
+      "discussing",
+      "front",
+      "ミーティングを始めよう！"
+    );
+
+    // Participants walk to side seats
+    participantsIds.forEach((pid, index) => {
+      const side = index % 2 === 0 ? "left" : "right";
+      const seatX = side === "left" ? 25 - index * 10 : 75 + index * 10;
+      triggerAgentWalk(
+        pid,
+        { x: -15, y: 45 },
+        { x: seatX, y: 45 },
+        2000,
+        "sitting",
+        side === "left" ? "right" : "left"
+      );
+    });
   };
 
   const handleCompleteMeeting = () => {
@@ -136,6 +285,45 @@ function App() {
     setIsReportViewerOpen(true);
   };
 
+  // Send Direct Instruction (Shiji) to an Agent
+  const handleSendShiji = (agentId: number, text: string) => {
+    const agent = hiredAgents.find(a => a.id === agentId);
+    if (!agent) return;
+
+    // Show dynamic chat bubble on the agent
+    setAgentPositions((prev) => ({
+      ...prev,
+      [agentId]: {
+        ...prev[agentId],
+        speech: `了解！「${text}」を受信しました！`,
+      }
+    }));
+
+    // Reset speech bubble after 4 seconds
+    setTimeout(() => {
+      setAgentPositions((prev) => {
+        if (!prev[agentId]) return prev;
+        return {
+          ...prev,
+          [agentId]: {
+            ...prev[agentId],
+            speech: undefined,
+          }
+        };
+      });
+    }, 4000);
+
+    // Append logs to the Work Room terminal
+    const shijiTime = new Date().toLocaleTimeString();
+    setWorkLogs((prev) => [
+      ...prev,
+      `[${shijiTime}] [システム] 社長より指示：「${text}」を受信しました。`,
+      `[${shijiTime}] [${agent.name}] 了解！指示された仕様でロジックを最適化します。`
+    ]);
+
+    addToast(`${agent.name}へ指示を送信しました！`, "success");
+  };
+
   // Chat Interactive Simulation Handlers
   const handleChatReply = (threadId: number, optionText: string) => {
     setEmailThreads((prev) =>
@@ -163,7 +351,24 @@ function App() {
       })
     );
 
-    addToast("返信を送信しました！", "info");
+    addToast("返信を送信しました！作業を開始します", "info");
+
+    // Trigger walk to Work Room workstations immediately
+    if (activeMeeting) {
+      const workingAgents = [activeMeeting.leaderId, ...activeMeeting.participantsIds];
+      workingAgents.forEach((pid, index) => {
+        const seatX = 20 + index * 30; // workstations are distributed at 20%, 50%, 80%
+        triggerAgentWalk(
+          pid,
+          { x: -10, y: 50 },
+          { x: seatX, y: 50 },
+          2000,
+          "working",
+          "back",
+          "実装に入ります！"
+        );
+      });
+    }
 
     // Simulate agent programming and producing artifact after 4 seconds
     setTimeout(() => {
@@ -180,12 +385,12 @@ function App() {
         id: Date.now(),
         taskId: targetTask.id,
         type: "website",
-        createdBy: `${activeThread.agentName} & Equipe`,
+        createdBy: `${activeThread.agentName} & チーム`,
         content: `<!DOCTYPE html>
 <html>
 <head>
   <meta charset="UTF-8">
-  <title>Projeto: ${targetTask.title}</title>
+  <title>プロジェクト: ${targetTask.title}</title>
   <style>
     body {
       background: #0f172a;
@@ -240,6 +445,40 @@ function App() {
         })
       );
 
+      // Trigger return walk to President Room
+      if (activeMeeting) {
+        const workingAgents = [activeMeeting.leaderId, ...activeMeeting.participantsIds];
+        
+        // 1. Walk off-screen left of Work Room
+        workingAgents.forEach((pid, index) => {
+          triggerAgentWalk(
+            pid,
+            { x: 20 + index * 30, y: 50 },
+            { x: -20, y: 50 },
+            1500,
+            "idle",
+            "left",
+            "作業完了！社長室へ戻ります！"
+          );
+        });
+
+        // 2. Walk into President Room from right side
+        setTimeout(() => {
+          workingAgents.forEach((pid) => {
+            const targetX = 35 + (pid * 10) % 45;
+            const targetY = 70 + (pid * 5) % 15;
+            triggerAgentWalk(
+              pid,
+              { x: 120, y: 70 },
+              { x: targetX, y: targetY },
+              2000,
+              "idle",
+              "front"
+            );
+          });
+        }, 1600);
+      }
+
       // Reset meeting room state
       setActiveMeeting(null);
       setCurrentMeetingReport(null);
@@ -284,8 +523,9 @@ function App() {
             onOpenHiring={() => setIsHiringOpen(true)}
             onSelectTask={(task) => {
               handleRoomNavClick("meeting");
-              addToast(`Selecione o Líder para iniciar: ${task.title}`, "info");
+              addToast(`リーダーを選択して会議を開始してください: ${task.title}`, "info");
             }}
+            agentPositions={agentPositions}
           />
         )}
 
@@ -298,6 +538,7 @@ function App() {
             onCompleteMeeting={handleCompleteMeeting}
             meetingReport={currentMeetingReport}
             onViewReport={handleViewReport}
+            agentPositions={agentPositions}
           />
         )}
 
@@ -307,6 +548,11 @@ function App() {
             artifacts={artifacts}
             onViewArtifact={handleViewArtifact}
             isMeetingCompleted={!!activeMeeting}
+            logs={workLogs}
+            setLogs={setWorkLogs}
+            onSendShiji={handleSendShiji}
+            activeMeeting={activeMeeting}
+            agentPositions={agentPositions}
           />
         )}
       </main>

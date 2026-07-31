@@ -75,7 +75,8 @@ body {
 
 /* App Layout */
 .app {
-  max-width: 1200px;
+  max-width: 1500px;
+  width: 100%;
   margin: 0 auto;
   padding: 1.5rem;
   display: flex;
@@ -202,7 +203,7 @@ header h1 {
   align-items: center;
   position: absolute;
   cursor: pointer;
-  transition: left 1s ease, top 1s ease;
+  transition: left 2s ease-in-out, bottom 2s ease-in-out;
 }
 
 .mascot-name {
@@ -354,3 +355,201 @@ header h1 {
 .toast.success {
   border-left-color: var(--success-color);
 }
+
+/* 2Dトップダウン用の床デザイン */
+
+.floor-wood {
+  background: repeating-linear-gradient(
+    90deg,
+    #2c1a11 0px,
+    #2c1a11 28px,
+    #1d100b 28px,
+    #1d100b 30px
+  );
+  box-shadow: inset 0 0 40px rgba(0, 0, 0, 0.95);
+  border: 4px solid #140d09;
+}
+
+.floor-carpet {
+  background-color: #161435;
+  background-image: radial-gradient(rgba(255, 255, 255, 0.04) 1.5px, transparent 1.5px);
+  background-size: 10px 10px;
+  box-shadow: inset 0 0 40px rgba(0, 0, 0, 0.95);
+  border: 4px solid #0f0d24;
+}
+
+.floor-tiles {
+  background-color: #111625;
+  background-image: 
+    linear-gradient(rgba(255, 255, 255, 0.015) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.015) 1px, transparent 1px);
+  background-size: 32px 32px;
+  box-shadow: inset 0 0 40px rgba(0, 0, 0, 0.95);
+  border: 4px solid #0a0d16;
+}
+
+/* 2Dトップダウン用の家具オブジェクト */
+
+.president-carpet {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -45%);
+  width: 55%;
+  height: 90px;
+  background: #6b1212;
+  border: 3px solid #b45309; /* Golden-amber border */
+  border-radius: 12px;
+  box-shadow: 0 4px 15px rgba(0, 0, 0, 0.6);
+  z-index: 1;
+}
+
+.monitor-topdown {
+  width: 32px;
+  height: 4px;
+  background: #06b6d4;
+  box-shadow: 0 0 10px rgba(6, 182, 212, 0.9);
+  border-radius: 2px;
+  position: absolute;
+  top: -2px;
+  left: 50%;
+  transform: translateX(-50%);
+  animation: pulseGlow 2s infinite;
+}
+
+.chair-topdown {
+  width: 44px;
+  height: 44px;
+  background: radial-gradient(circle at center, #374151 0%, #1f2937 100%);
+  border: 2px solid rgba(255, 255, 255, 0.1);
+  border-radius: 50%;
+  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.4);
+  position: absolute;
+  transform: translate(-50%, -50%);
+  z-index: 2;
+  pointer-events: none;
+}
+
+/* 開発作業室のディテール装飾オブジェクト */
+
+@keyframes blinkGreen {
+  0%, 100% { background-color: #059669; box-shadow: 0 0 4px #059669; }
+  50% { background-color: #34d399; box-shadow: 0 0 8px #34d399; }
+}
+@keyframes blinkRed {
+  0%, 100% { background-color: #b91c1c; box-shadow: 0 0 4px #b91c1c; }
+  50% { background-color: #f87171; box-shadow: 0 0 8px #f87171; }
+}
+@keyframes blinkBlue {
+  0%, 100% { background-color: #1d4ed8; box-shadow: 0 0 4px #1d4ed8; }
+  50% { background-color: #60a5fa; box-shadow: 0 0 8px #60a5fa; }
+}
+
+.server-rack {
+  width: 44px;
+  height: 120px;
+  background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
+  border: 2px solid #334155;
+  border-radius: 4px;
+  box-shadow: 0 8px 16px rgba(0, 0, 0, 0.6);
+  display: flex;
+  flex-direction: column;
+  justify-content: space-around;
+  padding: 8px 4px;
+  position: absolute;
+  z-index: 3;
+}
+
+.server-led-row {
+  display: flex;
+  justify-content: space-around;
+  width: 100%;
+}
+
+.server-led {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+}
+
+.server-led.green { animation: blinkGreen 1.2s infinite; }
+.server-led.red { animation: blinkRed 1.8s infinite; }
+.server-led.blue { animation: blinkBlue 1.5s infinite; }
+
+.kanban-whiteboard {
+  position: absolute;
+  top: 15px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 130px;
+  height: 48px;
+  background: #f8fafc;
+  border: 3px solid #475569;
+  border-radius: 4px;
+  box-shadow: 0 6px 12px rgba(0, 0, 0, 0.4);
+  z-index: 2;
+  display: flex;
+  gap: 8px;
+  padding: 6px;
+  justify-content: space-around;
+  align-items: center;
+}
+
+.kanban-column {
+  flex: 1;
+  height: 100%;
+  border-right: 1px solid #cbd5e1;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 2px;
+}
+.kanban-column:last-child {
+  border-right: none;
+}
+
+.kanban-sticky {
+  width: 100%;
+  height: 8px;
+  border-radius: 1px;
+}
+.kanban-sticky.yellow { background: #fef08a; }
+.kanban-sticky.cyan { background: #c5f2ff; }
+.kanban-sticky.pink { background: #fbcfe8; }
+
+.office-plant {
+  width: 32px;
+  height: 32px;
+  background: radial-gradient(circle at center, #16a34a 0%, #15803d 50%, #166534 100%);
+  border: 3px solid #78350f; /* Brown pot border */
+  border-radius: 50%;
+  box-shadow: 0 6px 12px rgba(0, 0, 0, 0.5);
+  position: absolute;
+  z-index: 3;
+}
+
+.keyboard-topdown {
+  width: 32px;
+  height: 6px;
+  background: #475569;
+  border-radius: 1px;
+  margin-top: 14px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
+  position: relative;
+  z-index: 5;
+}
+
+.coffee-topdown {
+  width: 6px;
+  height: 6px;
+  background: #b45309;
+  border: 1px solid #d97706;
+  border-radius: 50%;
+  position: absolute;
+  bottom: 4px;
+  right: 10px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+  z-index: 5;
+}
+
+
