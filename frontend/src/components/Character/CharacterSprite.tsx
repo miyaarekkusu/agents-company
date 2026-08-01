@@ -1,15 +1,4 @@
-import React, { useState, useEffect } from "react";
-import { getTransparentImage } from "./transparentImageLoader";
-import cookAgentImg from "../../image/cook_agent2.jpg";
-import cookAgentStaticImg from "../../image/cook_agent.jpg";
-import designerAgentImg from "../../image/designer_agent2.jpg";
-import designerAgentStaticImg from "../../image/designer_agent.jpg";
-import doctorAgentImg from "../../image/doctor_agent2.jpg";
-import doctorAgentStaticImg from "../../image/doctor_agent.jpg";
-import presidentAgentImg from "../../image/president_agent2.jpg";
-import presidentAgentStaticImg from "../../image/president_agent.jpg";
-import programmingAgentImg from "../../image/programming_agent2.jpg";
-import programmingAgentStaticImg from "../../image/programming_agent.jpg";
+import React from "react";
 
 export type CharacterState = "idle" | "walking" | "discussing" | "sitting" | "working";
 export type SpriteDirection = "front" | "back" | "right" | "left";
@@ -20,11 +9,12 @@ interface CharacterSpriteProps {
   state: CharacterState;
   direction?: SpriteDirection;
   speechBubble?: string;
-  gridType?: "4x1" | "4x2"; // グリッドの自動判定を上書きするオプション
-  useStaticOnly?: boolean;   // 4x1の静的スプライトのみを強制するオプション
   onClick?: () => void;
   style?: React.CSSProperties;
 }
+
+// 画像素材は使わず、役職ごとに複数種類の絵文字を使い分けて表現する。
+// state（座っている/作業中等）によって絵文字自体は変えない。椅子や机の上にそのまま乗っているように見せる。
 
 export const CharacterSprite: React.FC<CharacterSpriteProps> = ({
   name,
@@ -32,128 +22,64 @@ export const CharacterSprite: React.FC<CharacterSpriteProps> = ({
   state,
   direction = "front",
   speechBubble,
-  gridType,
-  useStaticOnly = false,
   onClick,
   style,
 }) => {
-  // 役割に対応するスプライト画像を割り当て
-  let rawSpriteImg = programmingAgentImg;
+  // 役割に対応するアクセサリーアイコン・役職名・キャラクター本体の絵文字を割り当て（役職ごとに絵文字を変えて多様性を出す）
   let accessoryIcon = "⚙️";
   let roleTitle = "エージェント";
+  let bodyEmoji = "🤖";
 
   if (roleId === "president") {
-    rawSpriteImg = useStaticOnly ? presidentAgentStaticImg : presidentAgentImg;
     accessoryIcon = "👑";
     roleTitle = "社長";
+    bodyEmoji = "🧑‍💼";
   } else {
     switch (Number(roleId)) {
       case 1: // Frontend
-        rawSpriteImg = useStaticOnly ? programmingAgentStaticImg : programmingAgentImg;
         accessoryIcon = "🎨";
         roleTitle = "フロントエンド";
+        bodyEmoji = "🧑‍💻";
         break;
       case 2: // Backend
-        rawSpriteImg = useStaticOnly ? programmingAgentStaticImg : programmingAgentImg;
         accessoryIcon = "💪";
         roleTitle = "バックエンド";
+        bodyEmoji = "🧑‍🔧";
         break;
       case 3: // Fullstack
-        rawSpriteImg = useStaticOnly ? programmingAgentStaticImg : programmingAgentImg;
         accessoryIcon = "⚡";
         roleTitle = "フルスタック";
+        bodyEmoji = "🧑‍🚀";
         break;
       case 4: // Tech Lead
-        rawSpriteImg = useStaticOnly ? doctorAgentStaticImg : doctorAgentImg;
         accessoryIcon = "👓";
         roleTitle = "テックリード";
+        bodyEmoji = "🧑‍🏫";
         break;
       case 5: // PM
-        rawSpriteImg = useStaticOnly ? doctorAgentStaticImg : doctorAgentImg;
         accessoryIcon = "📋";
         roleTitle = "プロジェクトマネージャー";
+        bodyEmoji = "🧑‍💼";
         break;
       case 6: // Idea Agent (Ponta)
-        rawSpriteImg = useStaticOnly ? cookAgentStaticImg : cookAgentImg;
         accessoryIcon = "💡";
         roleTitle = "アイデア出し";
+        bodyEmoji = "🧑‍🔬";
         break;
       case 7: // Designer
-        rawSpriteImg = useStaticOnly ? designerAgentStaticImg : designerAgentImg;
         accessoryIcon = "✏️";
         roleTitle = "デザイナー";
+        bodyEmoji = "🧑‍🎨";
         break;
       default:
-        rawSpriteImg = useStaticOnly ? programmingAgentStaticImg : programmingAgentImg;
         accessoryIcon = "🤖";
         roleTitle = "AIアシスタント";
+        bodyEmoji = "🤖";
     }
   }
 
-  // ファイル名からスプライトの種類（4x2歩行か4x1静的か）を自動判定
-  const detectedGrid = gridType || 
-    (rawSpriteImg.includes("2.jpg") || rawSpriteImg.includes("2-") || rawSpriteImg.includes("agent2") 
-      ? "4x2" 
-      : "4x1");
-
-  // 背景透過された画像の読み込み状態管理
-  const [displayImg, setDisplayImg] = useState(rawSpriteImg);
-
-  useEffect(() => {
-    let active = true;
-    setDisplayImg(rawSpriteImg); // Reset to raw fallback while processing
-    getTransparentImage(rawSpriteImg).then((transparentUrl) => {
-      if (active) {
-        setDisplayImg(transparentUrl);
-      }
-    });
-    return () => {
-      active = false;
-    };
-  }, [rawSpriteImg]);
-
-  // 歩行時の足踏みアニメーション切り替え用のローカル状態
-  const [walkFrame, setWalkFrame] = useState(0);
-
-  useEffect(() => {
-    if (state !== "walking" || detectedGrid !== "4x2") {
-      setWalkFrame(0);
-      return;
-    }
-
-    // 歩行状態の場合、250ms毎に足踏みフレームを交互に入れ替え
-    const interval = setInterval(() => {
-      setWalkFrame((prev) => (prev === 0 ? 1 : 0));
-    }, 250);
-
-    return () => clearInterval(interval);
-  }, [state, detectedGrid]);
-
-  // 向き(direction)に対応するスプライトの横位置X(列数)のオフセットを取得
-  const getBackgroundPositionX = (dir: SpriteDirection) => {
-    switch (dir) {
-      case "front": return "0%";
-      case "back": return "33.333%";
-      case "right": return "66.666%";
-      case "left": return "100%";
-      default: return "0%";
-    }
-  };
-
-  // 足踏みアニメーションに対応するスプライトの縦位置Y(行数)のオフセットを取得
-  const getBackgroundPositionY = () => {
-    if (detectedGrid === "4x2" && walkFrame === 1) {
-      return "100%";
-    }
-    return "0%";
-  };
-
-  // 画像縦横比崩れ防止のためのセルサイズ計算とCSS属性
-  const spriteWidth = 64;
-  const spriteHeight = detectedGrid === "4x2" ? 72 : 143;
-  const backgroundSize = detectedGrid === "4x2" ? "400% 200%" : "400% 100%";
-
   const animClass = `state-${state}`;
+  const mirrored = direction === "right";
 
   return (
     <div
@@ -171,7 +97,7 @@ export const CharacterSprite: React.FC<CharacterSpriteProps> = ({
     >
       {/* 吹き出し(Speech/Instruction Bubble)の表示 */}
       {speechBubble && (
-        <div 
+        <div
           className="speech-bubble-popup"
           style={{
             position: "absolute",
@@ -194,7 +120,7 @@ export const CharacterSprite: React.FC<CharacterSpriteProps> = ({
           }}
         >
           {speechBubble}
-          <div 
+          <div
             style={{
               position: "absolute",
               top: "100%",
@@ -210,29 +136,51 @@ export const CharacterSprite: React.FC<CharacterSpriteProps> = ({
         </div>
       )}
 
-      {/* スプライト表示用エリア */}
-      <div
-        style={{
-          width: `${spriteWidth}px`,
-          height: `${spriteHeight}px`,
-          backgroundImage: `url(${displayImg})`,
-          backgroundSize: backgroundSize,
-          backgroundPositionX: getBackgroundPositionX(direction),
-          backgroundPositionY: getBackgroundPositionY(),
-          backgroundRepeat: "no-repeat",
-          borderRadius: "8px",
-          filter: "drop-shadow(0 8px 12px rgba(0,0,0,0.4))",
-          transition: "background-position 0.1s steps(1)",
-        }}
-      />
-
-      {/* 名前と役割タグ */}
-      <span className="mascot-name" style={{ marginTop: "4px" }}>
+      {/* 名前と役割タグ（キャラクターの頭上に表示） */}
+      <span className="mascot-name" style={{ marginBottom: "4px" }}>
         {name}
         <div className="mascot-role" style={{ textAlign: "center", opacity: 0.85, fontSize: "0.65rem" }}>
           {accessoryIcon} {roleTitle}
         </div>
       </span>
+
+      {/* スプライト表示エリア: 全キャラクター共通の絵文字を表示。状態はCSSアニメーション(state-*)、向きは左右反転で表現 */}
+      <div
+        style={{
+          position: "relative",
+          display: "inline-flex",
+          justifyContent: "center",
+        }}
+      >
+        {/* 接地シャドウ：足元の真下に固定表示する */}
+        <div
+          aria-hidden="true"
+          style={{
+            position: "absolute",
+            bottom: "-2px",
+            left: "50%",
+            transform: "translateX(-50%)",
+            width: "60%",
+            height: "8px",
+            borderRadius: "50%",
+            background: "radial-gradient(ellipse, rgba(0,0,0,0.45) 0%, rgba(0,0,0,0) 70%)",
+            pointerEvents: "none",
+          }}
+        />
+        <span
+          role="img"
+          aria-label={`${name} (${roleTitle})`}
+          style={{
+            fontSize: "2.6rem",
+            lineHeight: 1,
+            display: "inline-block",
+            transform: mirrored ? "scaleX(-1)" : undefined,
+            filter: "drop-shadow(0 6px 6px rgba(0,0,0,0.4))",
+          }}
+        >
+          {bodyEmoji}
+        </span>
+      </div>
     </div>
   );
 };

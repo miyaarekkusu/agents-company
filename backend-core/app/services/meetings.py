@@ -48,6 +48,34 @@ async def has_in_progress_meeting(session: AsyncSession) -> bool:
     return result.first() is not None
 
 
+@dataclass
+class ActiveMeetingInfo:
+    """進行中の会議1件分のリーダー・参加者ID（`get_active_meeting_info`の返り値）。"""
+
+    leader_agent_id: int
+    participant_agent_ids: list[int]
+
+
+async def get_active_meeting_info(session: AsyncSession) -> ActiveMeetingInfo | None:
+    """進行中の会議（会議室は1つのみのため、あっても常に1件）のリーダー・参加者ID一覧を返す。
+    進行中の会議が無ければNone。フロントエンドの会議室画面で、実際に会議に参加している
+    エージェントだけを表示するために使う。
+    """
+    meeting = await session.scalar(select(Meeting).where(Meeting.status == "in_progress").limit(1))
+    if meeting is None:
+        return None
+
+    participant_ids = (
+        await session.scalars(
+            select(MeetingParticipant.agent_id).where(MeetingParticipant.meeting_id == meeting.id)
+        )
+    ).all()
+    return ActiveMeetingInfo(
+        leader_agent_id=meeting.leader_agent_id,
+        participant_agent_ids=list(participant_ids),
+    )
+
+
 async def start_meeting(
     session: AsyncSession,
     *,

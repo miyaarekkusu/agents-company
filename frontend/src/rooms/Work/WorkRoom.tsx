@@ -1,189 +1,224 @@
-import React, { useState, useEffect } from "react";
-import { type Agent } from "../../mocks/agents";
-import { type Artifact } from "../../mocks/tasks";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { AgentOut, ArtifactOut, TaskOut } from "../../api/types";
 import { CharacterSprite } from "../../components/Character/CharacterSprite";
+import { FurniturePiece, RoomBackground, type FurnitureLayout, type FurnitureVisual } from "../../components/Room/Furniture";
+import { usePlayerMovement, type SeatDefinition } from "../../components/Room/usePlayerMovement";
+import { Modal } from "../../components/Common/Modal";
+import { WorkProgressModal } from "../../features/work-progress/WorkProgressModal";
 
 interface WorkRoomProps {
-  hiredAgents: Agent[];
-  artifacts: Artifact[];
-  onViewArtifact: (artifact: Artifact) => void;
-  isMeetingCompleted: boolean;
-  logs: string[];
-  setLogs: React.Dispatch<React.SetStateAction<string[]>>;
-  onSendShiji: (agentId: number, text: string) => void;
-  activeMeeting: {
-    taskId: number;
-    leaderId: number;
-    participantsIds: number[];
-    status: "discussing" | "completed";
-  } | null;
-  agentPositions: Record<number, any>;
+  artifacts: ArtifactOut[];
+  inProgressTasks: TaskOut[];
+  agents: AgentOut[];
+  onViewArtifact: (artifact: ArtifactOut) => void;
 }
 
-export const WorkRoom: React.FC<WorkRoomProps> = ({
-  hiredAgents,
-  artifacts,
-  onViewArtifact,
-  isMeetingCompleted,
-  logs,
-  setLogs,
-  onSendShiji,
-  activeMeeting,
-  agentPositions,
-}) => {
-  const [selectedAgentId, setSelectedAgentId] = useState<number | "">("");
-  const [shijiText, setShijiText] = useState("");
+const DEFAULT_WORK_WIDTH = 400;
+// デスクの列オフセット（部屋中央からの相対x）と行(y)。「もっと机を並べて」の要望に合わせ、2列×4台=8台に増やす。
+const DESK_COLUMN_OFFSETS = [-300, -100, 100, 300];
+const DESK_ROWS = [260, 90];
+const CHAIR_OFFSET_Y = 45; // デスクの手前(下)に椅子を置く距離
 
-  const activeWorkers = hiredAgents.filter(
-    (a) => activeMeeting && (a.id === activeMeeting.leaderId || activeMeeting.participantsIds.includes(a.id))
+// 作業室の家具配置（座標は部屋コンテナのleft/bottom基準、px）。画像素材は使わず、CSSのみで表現する。
+// 部屋の中央（コンテナ幅の半分）を基準に配置する。デスクごとに椅子を1脚セットで配置する。
+function getWorkFurnitureLayout(centerX: number): FurnitureLayout[] {
+  const items: FurnitureLayout[] = [];
+  DESK_ROWS.forEach((y, rowIndex) => {
+    DESK_COLUMN_OFFSETS.forEach((offset, colIndex) => {
+      items.push({
+        id: `desk-${rowIndex}-${colIndex}`,
+        x: centerX + offset,
+        y,
+        width: 140,
+        height: 60,
+        collidable: true,
+        zIndex: 6,
+        // 机は見た目の箱より少し外側まで当たり判定を広げる（際どく縁を掠める操作感を避けるため）
+        collisionPadding: 10,
+      });
+      // 椅子は当たり判定を持たせない（座席アンカーが椅子の真上にあるため、当たり判定があると
+      // 立ち上がった瞬間に自分自身の位置が障害物と重なり、二度と動けなくなるバグの原因になる）
+      items.push({
+        id: `chair-${rowIndex}-${colIndex}`,
+        x: centerX + offset,
+        y: y - CHAIR_OFFSET_Y,
+        width: 32,
+        height: 32,
+        collidable: false,
+        zIndex: 5,
+      });
+    });
+  });
+  return items;
+}
+
+// 各デスク手前の椅子に座るための座席アンカー（机側を向いて座る）
+function getWorkSeats(): SeatDefinition[] {
+  const seats: SeatDefinition[] = [];
+  DESK_ROWS.forEach((y, rowIndex) => {
+    DESK_COLUMN_OFFSETS.forEach((offset, colIndex) => {
+      seats.push({
+        id: `seat-${rowIndex}-${colIndex}`,
+        getPosition: (containerWidth) => ({
+          x: containerWidth / 2 + offset,
+          y: y - CHAIR_OFFSET_Y,
+          direction: "back",
+        }),
+      });
+    });
+  });
+  return seats;
+}
+
+const deskVisual: FurnitureVisual = {
+  fallbackStyle: {
+    background: "linear-gradient(180deg, #5c3a21 0%, #362213 100%)",
+    borderRadius: "6px",
+    boxShadow: "0 8px 16px rgba(0,0,0,0.6)",
+    border: "2px solid #82522e",
+    fontSize: "0.75rem",
+    color: "#ffedd5",
+    fontWeight: "bold",
+  },
+  fallbackContent: "💻",
+};
+
+const chairVisual: FurnitureVisual = {
+  fallbackStyle: {
+    background: "radial-gradient(circle at center, #374151 0%, #1f2937 100%)",
+    border: "2px solid rgba(255,255,255,0.15)",
+    borderRadius: "50%",
+    boxShadow: "0 4px 8px rgba(0,0,0,0.5)",
+  },
+};
+
+function getWorkVisuals(): Record<string, FurnitureVisual> {
+  const visuals: Record<string, FurnitureVisual> = {};
+  DESK_ROWS.forEach((_, rowIndex) => {
+    DESK_COLUMN_OFFSETS.forEach((_, colIndex) => {
+      visuals[`desk-${rowIndex}-${colIndex}`] = deskVisual;
+      visuals[`chair-${rowIndex}-${colIndex}`] = chairVisual;
+    });
+  });
+  return visuals;
+}
+const WORK_VISUALS = getWorkVisuals();
+
+export const WorkRoom: React.FC<WorkRoomProps> = ({ artifacts, inProgressTasks, agents, onViewArtifact }) => {
+  // 進行中タスクに紐づく「作業中のエージェント名」を全タスクから集約する（重複除去）。
+  const workingAgentNames = React.useMemo(() => {
+    const names = new Set<string>();
+    inProgressTasks.forEach((task) => task.in_progress_agent_names.forEach((n) => names.add(n)));
+    return names;
+  }, [inProgressTasks]);
+
+  // 名前をキーに agents（roleId等を含む完全なAgentOut）と突き合わせる。
+  const workingAgents = React.useMemo(
+    () => agents.filter((a) => workingAgentNames.has(a.name)),
+    [agents, workingAgentNames],
   );
+  // 誰も作業していない間は部屋を無人にする（特定の1人が常に居座って見える問題を避けるため、
+  // 「待機中の雰囲気付け」に固定のagents[0]を表示することはしない）。
 
-  // 選択が空の場合、初期値として最初の作業中エージェントを選択
+  // 社長がWASDで自由に部屋の中を歩き回れるようにする
+  const sceneRef = useRef<HTMLDivElement>(null);
+  const [sceneWidth, setSceneWidth] = useState(DEFAULT_WORK_WIDTH);
   useEffect(() => {
-    if (activeWorkers.length > 0 && selectedAgentId === "") {
-      setSelectedAgentId(activeWorkers[0].id);
-    }
-  }, [activeWorkers, selectedAgentId]);
+    const el = sceneRef.current;
+    if (!el) return;
+    const update = () => setSceneWidth(el.clientWidth);
+    update();
+    const observer = new ResizeObserver(update);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
+  const centerX = sceneWidth / 2;
+  const workFurniture = getWorkFurnitureLayout(centerX);
+  // getFurnitureLayout/seatsは移動フック内のuseEffectの依存配列に使われるため、毎レンダー新しい参照を
+  // 渡すとRAFループが再生成され続けて移動できなくなる。安定した参照になるようメモ化する。
+  const getFurnitureLayoutForPlayer = useCallback((w: number) => getWorkFurnitureLayout(w / 2), []);
+  const workSeats = useMemo(() => getWorkSeats(), []);
+  const {
+    pos: playerPos,
+    direction: playerDirection,
+    isMoving: playerIsMoving,
+    isSitting: playerIsSitting,
+    sittingSeat: playerSittingSeat,
+    getNearSeat,
+  } = usePlayerMovement(sceneRef, getFurnitureLayoutForPlayer, { spawnY: 15, seats: workSeats });
+  const nearSeat = getNearSeat();
 
-  // 会議完了後の作業中ログをシミュレート
-  useEffect(() => {
-    if (!isMeetingCompleted || activeWorkers.length === 0) return;
-
-    const interval = setInterval(() => {
-      const activeAgent = activeWorkers[Math.floor(Math.random() * activeWorkers.length)];
-      const templates = [
-        `[${activeAgent.name}] メインモジュールの開発を開始中...`,
-        `[${activeAgent.name}] 単体テストを作成し、応答をモック中...`,
-        `[${activeAgent.name}] コンテナログを分析し、依存関係を解決中...`,
-        `[${activeAgent.name}] UIのリファクタリングとレスポンシブ動作を検証中...`,
-        `[${activeAgent.name}] Viteを使用したパフォーマンス最適化とビルドを実行中...`,
-        `[${activeAgent.name}] 継続的インテグレーション：すべてのテストに合格しました！✨`,
-      ];
-      const randomLog = templates[Math.floor(Math.random() * templates.length)];
-      const logTime = new Date().toLocaleTimeString();
-      setLogs((prev) => [...prev.slice(-28), `[${logTime}] ${randomLog}`]);
-    }, 4500);
-
-    return () => clearInterval(interval);
-  }, [isMeetingCompleted, activeWorkers, setLogs]);
+  // 「リアルタイムで見る」モーダルで表示中のお題（nullなら非表示）
+  const [progressTask, setProgressTask] = useState<TaskOut | null>(null);
 
   return (
     <div style={{ display: "grid", gridTemplateColumns: "360px 1fr", gap: "1.5rem", alignItems: "start" }}>
-      {/* Left Column: Management Panels, Logs & Artifacts */}
+      {/* Left Column: 進行中タスク & 成果物一覧 */}
       <div style={{ display: "flex", flexDirection: "column", gap: "1.5rem" }}>
-        {/* エージェントへの指示出しフォーム */}
-        {isMeetingCompleted && activeWorkers.length > 0 ? (
-          <div className="glass-panel" style={{ padding: "1.5rem", borderLeft: "4px solid var(--secondary-color)" }}>
-            <h3 style={{ margin: 0, marginBottom: "1rem", fontSize: "1.1rem", display: "flex", alignItems: "center", gap: "8px" }}>
-              ⚡ エージェント指示 (Shiji)
-            </h3>
-            <form 
-              onSubmit={(e) => {
-                e.preventDefault();
-                if (selectedAgentId !== "" && shijiText.trim() !== "") {
-                  onSendShiji(Number(selectedAgentId), shijiText.trim());
-                  setShijiText("");
-                }
-              }}
-              style={{ display: "flex", flexDirection: "column", gap: "12px" }}
-            >
-              <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
-                <label style={{ fontSize: "0.8rem", color: "var(--text-secondary)", fontWeight: "500" }}>対象エージェント</label>
-                <select
-                  value={selectedAgentId}
-                  onChange={(e) => setSelectedAgentId(Number(e.target.value))}
+        {/* 進行中の作業（閲覧専用） */}
+        <div className="glass-panel" style={{ padding: "1.5rem" }}>
+          <h3 style={{ margin: 0, marginBottom: "1rem", fontSize: "1.1rem", display: "flex", alignItems: "center", gap: "8px" }}>
+            🖥️ 作業中のお題
+            {inProgressTasks.length > 0 && (
+              <span style={{ fontSize: "0.75rem", background: "var(--success-color)", color: "#fff", padding: "2px 6px", borderRadius: "10px", animation: "pulseGlow 1.5s infinite" }}>
+                稼働中
+              </span>
+            )}
+          </h3>
+          {inProgressTasks.length === 0 ? (
+            <div style={{ color: "var(--text-muted)", fontSize: "0.85rem", padding: "10px", textAlign: "center" }}>
+              現在作業中のお題はありません。
+            </div>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+              {inProgressTasks.map((task) => (
+                <div
+                  key={task.id}
                   style={{
-                    background: "#0f172a",
-                    color: "#fff",
-                    border: "1px solid rgba(255,255,255,0.15)",
-                    padding: "10px 14px",
+                    background: "rgba(255,255,255,0.03)",
+                    border: "1px solid rgba(255,255,255,0.06)",
                     borderRadius: "8px",
-                    fontSize: "0.85rem",
-                    width: "100%",
-                    cursor: "pointer"
+                    padding: "10px 12px",
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: "8px",
                   }}
                 >
-                  {activeWorkers.map((w) => (
-                    <option key={w.id} value={w.id}>
-                      {w.name} ({w.role.name})
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
-                <label style={{ fontSize: "0.8rem", color: "var(--text-secondary)", fontWeight: "500" }}>指示内容 (お仕事指示)</label>
-                <input
-                  type="text"
-                  placeholder="例: UIの色を鮮やかにして！"
-                  value={shijiText}
-                  onChange={(e) => setShijiText(e.target.value)}
-                  style={{
-                    background: "#0f172a",
-                    color: "#fff",
-                    border: "1px solid rgba(255,255,255,0.15)",
-                    padding: "10px 14px",
-                    borderRadius: "8px",
-                    fontSize: "0.85rem",
-                    outline: "none"
-                  }}
-                />
-              </div>
-
-              <button 
-                type="submit" 
-                className="btn-primary" 
-                style={{ 
-                  background: "var(--secondary-color)", 
-                  boxShadow: "0 0 10px var(--secondary-glow)", 
-                  padding: "10px 20px",
-                  fontSize: "0.85rem",
-                  width: "100%"
-                }}
-                disabled={shijiText.trim() === ""}
-              >
-                指示を送る
-              </button>
-            </form>
-          </div>
-        ) : (
-          <div className="glass-panel" style={{ padding: "1.5rem", color: "var(--text-muted)", fontSize: "0.85rem", textAlign: "center" }}>
-            現在指示を出せるエージェントはいません。
-          </div>
-        )}
-
-        {/* 作業ログのリアルタイムストリーム表示 */}
-        <div className="glass-panel" style={{ padding: "1.5rem", display: "flex", flexDirection: "column", gap: "10px" }}>
-          <h3 style={{ margin: 0, fontSize: "1.1rem", display: "flex", alignItems: "center", gap: "8px" }}>
-            🖥️ 作業ログ・ターミナル
-            {isMeetingCompleted && <span style={{ fontSize: "0.75rem", background: "var(--success-color)", color: "#fff", padding: "2px 6px", borderRadius: "10px", animation: "pulseGlow 1.5s infinite" }}>稼働中</span>}
-          </h3>
-          <div
-            style={{
-              background: "#05070c",
-              border: "1px solid rgba(255,255,255,0.06)",
-              borderRadius: "8px",
-              padding: "12px",
-              fontFamily: "monospace",
-              fontSize: "0.8rem",
-              height: "180px",
-              overflowY: "auto",
-              color: "#38bdf8",
-              display: "flex",
-              flexDirection: "column",
-              gap: "4px"
-            }}
-          >
-            {logs.map((log, index) => (
-              <div key={index}>{log}</div>
-            ))}
-          </div>
+                  <div>
+                    <strong style={{ fontSize: "0.9rem" }}>{task.title}</strong>
+                    <div style={{ fontSize: "0.75rem", color: "var(--text-secondary)", marginTop: "4px" }}>
+                      {task.in_progress_agent_names.length > 0
+                        ? `${task.in_progress_agent_names.join("、")} が作業中...`
+                        : "作業中のエージェント情報を取得中..."}
+                    </div>
+                  </div>
+                  <button
+                    className="btn-secondary"
+                    style={{ alignSelf: "flex-start", padding: "4px 10px", fontSize: "0.75rem", display: "flex", alignItems: "center", gap: "6px" }}
+                    onClick={() => setProgressTask(task)}
+                  >
+                    <span
+                      style={{
+                        width: "7px",
+                        height: "7px",
+                        borderRadius: "50%",
+                        background: "var(--success-color)",
+                        boxShadow: "0 0 6px var(--success-glow)",
+                        animation: "pulseGlow 1.2s infinite",
+                      }}
+                    />
+                    リアルタイムで見る
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
 
         {/* 生成された成果物の一覧表示 */}
         <div className="glass-panel" style={{ padding: "1.5rem" }}>
           <h3 style={{ margin: 0, marginBottom: "1rem", fontSize: "1.1rem" }}>📦 成果物 (アーティファクト)</h3>
-          <div style={{ display: "flex", flexDirection: "column", gap: "8px", maxHeight: "150px", overflowY: "auto" }}>
+          <div style={{ display: "flex", flexDirection: "column", gap: "8px", maxHeight: "320px", overflowY: "auto" }}>
             {artifacts.length === 0 ? (
               <div style={{ color: "var(--text-muted)", fontSize: "0.8rem", padding: "10px", textAlign: "center" }}>
                 生成された成果物はまだありません。
@@ -199,14 +234,22 @@ export const WorkRoom: React.FC<WorkRoomProps> = ({
                     borderRadius: "8px",
                     display: "flex",
                     justifyContent: "space-between",
-                    alignItems: "center"
+                    alignItems: "center",
+                    gap: "10px",
                   }}
                 >
-                  <div style={{ fontSize: "0.85rem", fontWeight: "bold" }}>和菓子屋の紹介サイト</div>
+                  <div style={{ overflow: "hidden" }}>
+                    <div style={{ fontSize: "0.85rem", fontWeight: "bold", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      {art.task_title ?? "（お題不明）"}
+                    </div>
+                    <div style={{ fontSize: "0.7rem", color: "var(--text-secondary)", marginTop: "2px" }}>
+                      {art.agent_name ?? "エージェント不明"} • {new Date(art.created_at).toLocaleString()}
+                    </div>
+                  </div>
                   <button
                     onClick={() => onViewArtifact(art)}
                     className="btn-primary"
-                    style={{ padding: "4px 8px", fontSize: "0.75rem", background: "var(--secondary-color)", boxShadow: "0 0 8px var(--secondary-glow)" }}
+                    style={{ padding: "4px 8px", fontSize: "0.75rem", background: "var(--secondary-color)", boxShadow: "0 0 8px var(--secondary-glow)", flexShrink: 0 }}
                   >
                     成果物を確認
                   </button>
@@ -217,171 +260,112 @@ export const WorkRoom: React.FC<WorkRoomProps> = ({
         </div>
       </div>
 
-      {/* Right Column: 2D Visual Room */}
+      {/* Right Column: 2D Visual Room（CSSのみで表現） */}
       <div
+        ref={sceneRef}
         className="glass-panel floor-tiles"
         style={{
           height: "480px",
           position: "relative",
           overflow: "hidden",
-          padding: "20px"
         }}
       >
-        <div style={{ color: "rgba(255,255,255,0.25)", fontSize: "0.85rem", position: "absolute", top: "15px", left: "20px", zIndex: 10 }}>
-          💻 作業室
+        <RoomBackground label="💻 作業室" />
+
+        <div style={{ color: "rgba(255,255,255,0.2)", fontSize: "0.7rem", position: "absolute", top: "15px", right: "20px", zIndex: 10 }}>
+          ⌨️ WASDで移動
         </div>
 
-        {/* 右上のサーバーラックと点滅するLEDインジケータ */}
-        <div className="server-rack" style={{ top: "30px", right: "25px" }}>
-          <div className="server-led-row">
-            <span className="server-led green"></span>
-            <span className="server-led green"></span>
-            <span className="server-led red"></span>
-          </div>
-          <div className="server-led-row">
-            <span className="server-led green"></span>
-            <span className="server-led blue"></span>
-            <span className="server-led green"></span>
-          </div>
-          <div className="server-led-row">
-            <span className="server-led red"></span>
-            <span className="server-led green"></span>
-            <span className="server-led blue"></span>
-          </div>
-        </div>
+        {workFurniture.map((item) => (
+          <FurniturePiece key={item.id} layout={item} visual={WORK_VISUALS[item.id]} />
+        ))}
 
-        <div className="server-rack" style={{ top: "30px", right: "75px" }}>
-          <div className="server-led-row">
-            <span className="server-led green"></span>
-            <span className="server-led blue"></span>
-            <span className="server-led green"></span>
-          </div>
-          <div className="server-led-row">
-            <span className="server-led red"></span>
-            <span className="server-led green"></span>
-            <span className="server-led red"></span>
-          </div>
-          <div className="server-led-row">
-            <span className="server-led green"></span>
-            <span className="server-led green"></span>
-            <span className="server-led blue"></span>
-          </div>
-        </div>
+        {/* デスクで作業中のエージェント（各デスク手前の椅子に1人ずつ着席させる。デスク数を超える分は最後の椅子にずらして重ねる） */}
+        {workingAgents.map((agent, i) => {
+          const seat = workSeats[i % workSeats.length].getPosition(sceneWidth);
+          const overflow = Math.floor(i / workSeats.length);
+          return (
+            <CharacterSprite
+              key={agent.id}
+              name={agent.name}
+              roleId={agent.role.id}
+              state="sitting"
+              direction={seat.direction}
+              style={{
+                position: "absolute",
+                left: `${seat.x + overflow * 24}px`,
+                bottom: `${seat.y}px`,
+                transform: "translateX(-50%)",
+                // 机(zIndex:6)より前面に表示し、机の下に隠れないようにする
+                zIndex: 7,
+              }}
+            />
+          );
+        })}
 
-        {/* 壁面のカンバンホワイトボード */}
-        <div className="kanban-whiteboard" style={{ top: "25px" }} />
-
-        {/* 観葉植物 of デコレーション */}
-        <div className="office-plant" style={{ top: "30px", left: "25px" }} />
-        <div className="office-plant" style={{ bottom: "25px", left: "25px" }} />
-
-        {/* 各エージェントのデスク位置設定 */}
-        {activeWorkers.length === 0 ? (
-          <div 
-            style={{ 
-              position: "absolute", 
-              top: "50%", 
-              left: "50%", 
-              transform: "translate(-50%, -50%)", 
-              color: "var(--text-muted)", 
-              fontSize: "0.95rem",
-              zIndex: 10
+        {(nearSeat || playerIsSitting) && (
+          <div
+            style={{
+              position: "absolute",
+              left: `${(playerIsSitting ? playerSittingSeat! : nearSeat!).x}px`,
+              bottom: `${(playerIsSitting ? playerSittingSeat! : nearSeat!).y + 55}px`,
+              transform: "translateX(-50%)",
+              color: "rgba(255,255,255,0.75)",
+              fontSize: "0.7rem",
+              background: "rgba(0,0,0,0.35)",
+              padding: "3px 8px",
+              borderRadius: "6px",
+              whiteSpace: "nowrap",
+              zIndex: 9,
             }}
           >
-            現在、稼働中のエージェントはいません。会議室でプランを策定してください。
+            {playerIsSitting ? "⌨️ Eキーで立つ" : "⌨️ Eキーで座る"}
           </div>
-        ) : (
-          activeWorkers.map((agent) => {
-            const pos = agentPositions[agent.id];
-            if (!pos) return null;
-            return (
-              <div
-                key={agent.id}
-                style={{
-                  position: "absolute",
-                  left: typeof pos.x === "number" ? `${pos.x}%` : pos.x,
-                  bottom: typeof pos.y === "number" ? `${pos.y * 1.6}px` : pos.y,
-                  transition: pos.noTransition ? "none" : "left 2s ease-in-out, bottom 2s ease-in-out",
-                  display: "flex",
-                  flexDirection: "column",
-                  alignItems: "center",
-                  width: "120px",
-                  transform: "translateX(-50%)",
-                  zIndex: 5
-                }}
-              >
-                {/* キャラクター背後のオフィスチェアベース */}
-                <div 
-                  className="chair-topdown"
-                  style={{
-                    position: "absolute",
-                    top: "35px",
-                    left: "50%",
-                    transform: "translate(-50%, -50%)",
-                    transition: pos.noTransition ? "none" : "left 2s ease-in-out, bottom 2s ease-in-out",
-                  }}
-                />
-
-                {/* エージェントキャラクター */}
-                <CharacterSprite
-                  name={agent.name}
-                  roleId={agent.role.id}
-                  state={pos.state}
-                  direction={pos.dir}
-                  speechBubble={pos.speech}
-                  style={{ position: "relative", bottom: "auto", left: "auto" }}
-                />
-
-                {/* デスクとモニターのグラフィック表現 */}
-                <div
-                  style={{
-                    width: "80px",
-                    height: "36px",
-                    background: "linear-gradient(180deg, #cfd8dc 0%, #90a4ae 100%)",
-                    border: "1px solid #b0bec5",
-                    borderRadius: "4px 4px 0 0",
-                    marginTop: "12px",
-                    display: "flex",
-                    flexDirection: "column",
-                    alignItems: "center",
-                    justifyContent: "flex-start",
-                    paddingTop: "2px",
-                    boxShadow: "0 6px 12px rgba(0,0,0,0.5)",
-                    position: "relative",
-                    zIndex: 4
-                  }}
-                >
-                  {/* 点灯するデュアルモニター */}
-                  <div 
-                    className="monitor-topdown" 
-                    style={{ 
-                      width: "28px",
-                      left: "30%",
-                      background: pos.state === "working" ? "#06b6d4" : "#334155", 
-                      boxShadow: pos.state === "working" ? "0 0 8px rgba(6, 182, 212, 0.8)" : "none" 
-                    }} 
-                  />
-                  <div 
-                    className="monitor-topdown" 
-                    style={{ 
-                      width: "28px",
-                      left: "70%",
-                      background: pos.state === "working" ? "#06b6d4" : "#334155", 
-                      boxShadow: pos.state === "working" ? "0 0 8px rgba(6, 182, 212, 0.8)" : "none" 
-                    }} 
-                  />
-
-                  {/* メカニカルキーボード */}
-                  <div className="keyboard-topdown" />
-
-                  {/* コーヒーカップ */}
-                  <div className="coffee-topdown" />
-                </div>
-              </div>
-            );
-          })
         )}
+
+        {/* 社長本人（プレイヤー）。WASDで部屋の中を自由に移動でき、デスクの椅子にEキーで座れる */}
+        <CharacterSprite
+          name="社長 (あなた)"
+          roleId="president"
+          state={playerIsSitting ? "sitting" : playerIsMoving ? "walking" : "idle"}
+          direction={playerIsSitting ? playerSittingSeat!.direction : playerDirection}
+          style={{
+            position: "absolute",
+            bottom: `${playerIsSitting ? playerSittingSeat!.y : playerPos.y}px`,
+            left: `${playerIsSitting ? playerSittingSeat!.x : playerPos.x}px`,
+            transform: "translateX(-50%)",
+            transition: playerIsMoving ? "none" : "left 0.15s ease-out, bottom 0.15s ease-out",
+            zIndex: 9,
+          }}
+        />
+
+        <div
+          style={{
+            position: "absolute",
+            bottom: "16px",
+            right: "16px",
+            maxWidth: "260px",
+            color: "#fff",
+            fontSize: "0.85rem",
+            textAlign: "right",
+            textShadow: "0 1px 4px rgba(0,0,0,0.9)",
+            zIndex: 10,
+          }}
+        >
+          {inProgressTasks.length > 0
+            ? `${inProgressTasks.length}件のお題が作業中です。左のパネルで進捗と成果物を確認できます。`
+            : "現在、稼働中のお題はありません。"}
+        </div>
       </div>
+
+      {/* 作業状況をリアルタイム(数秒おきのポーリング)で確認するモーダル */}
+      <Modal
+        isOpen={progressTask !== null}
+        onClose={() => setProgressTask(null)}
+        title="🖥️ 作業状況をリアルタイムで見る"
+      >
+        {progressTask && <WorkProgressModal task={progressTask} agents={agents} artifacts={artifacts} />}
+      </Modal>
     </div>
   );
 };

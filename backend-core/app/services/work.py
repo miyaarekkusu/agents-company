@@ -185,6 +185,34 @@ async def has_in_progress_work(session: AsyncSession) -> bool:
     return result.first() is not None
 
 
+@dataclass
+class WorkSessionDetail:
+    """`get_latest_work_session_for_task`の返り値（作業セッション本体＋担当者ID一覧）。"""
+
+    work_session: WorkSession
+    worker_agent_ids: list[int]
+
+
+async def get_latest_work_session_for_task(session: AsyncSession, task_id: int) -> WorkSessionDetail | None:
+    """指定したお題の最新の作業セッション（進行中なら通常それが最新）を、担当者ID一覧付きで返す。
+    見つからなければNone。作業室の「リアルタイムで見る」モーダル用。
+    """
+    work_session = await session.scalar(
+        select(WorkSession).where(WorkSession.task_id == task_id).order_by(WorkSession.created_at.desc()).limit(1)
+    )
+    if work_session is None:
+        return None
+
+    worker_ids = (
+        await session.scalars(
+            select(WorkSessionParticipant.agent_id).where(
+                WorkSessionParticipant.work_session_id == work_session.id
+            )
+        )
+    ).all()
+    return WorkSessionDetail(work_session=work_session, worker_agent_ids=list(worker_ids))
+
+
 async def start_work(
     session: AsyncSession, *, task_id: int, worker_agent_ids: list[int], leader_agent_id: int
 ) -> WorkSession:
