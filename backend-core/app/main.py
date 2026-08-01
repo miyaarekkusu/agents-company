@@ -6,12 +6,18 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.agents import router as agents_router
+from app.api.mail import router as mail_router
+from app.api.meetings import router as meetings_router
 from app.api.tasks import router as tasks_router
+from app.api.work import router as work_router
 from app.core.config import settings
 
 app = FastAPI(title=settings.APP_NAME)
 app.include_router(tasks_router, prefix="/api")
 app.include_router(agents_router, prefix="/api")
+app.include_router(meetings_router, prefix="/api")
+app.include_router(work_router, prefix="/api")
+app.include_router(mail_router, prefix="/api")
 
 app.add_middleware(
     CORSMiddleware,

@@ -23,6 +23,22 @@ from app.models.role import Role
 from app.models.skill import Skill
 
 
+def build_system_prompt(name: str, personality: str, role_name: str, provider: str) -> str:
+    """名前・性格・役職からシステムプロンプトを組み立てる。
+
+    AGENTS.mdの自己認識ルール（「あなたは◯◯という名前の、〜ベースのエージェントです」）に
+    従い、モデルの自己紹介がClaude等の別AIを名乗ってしまう事故を防ぐ。
+    """
+    base = "DeepSeekベース" if provider == "deepseek" else f"{provider}ベース"
+    return (
+        f"あなたは{name}という名前の、{base}のエージェントです。あなたの役職は{role_name}です。\n\n"
+        f"あなたの性格・特徴は次の通りです: {personality}\n\n"
+        f"社長からのお題に対して、{role_name}としての専門性を活かし、誠実かつ分かりやすく応答してください。"
+        f"自己紹介を求められた場合は、自分が{name}という名前の{base}のエージェントであることを"
+        f"明示的に伝えてください。"
+    )
+
+
 async def list_roles(session: AsyncSession) -> Sequence[Role]:
     """役職一覧を返す。"""
     result = await session.scalars(select(Role))

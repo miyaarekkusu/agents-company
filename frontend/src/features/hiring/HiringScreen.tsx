@@ -1,118 +1,149 @@
-import React, { useState } from "react";
-import {
-  type Agent,
-  MOCK_AI_MODELS,
-  MOCK_ROLES,
-  MOCK_SKILLS,
-  MOCK_CANDIDATES,
-} from "../../mocks/agents";
+import React, { useEffect, useState } from "react";
+import type { RoleOut, SkillOut, AIModelOut } from "../../api/types";
+import * as api from "../../api/client";
 
 interface HiringScreenProps {
-  onHire: (newAgent: Agent) => void;
-  hiredAgents: Agent[];
+  addToast: (text: string, type?: "info" | "success") => void;
+  onHired: () => void;
 }
 
-export const HiringScreen: React.FC<HiringScreenProps> = ({ onHire, hiredAgents }) => {
-  const [selectedCandidate, setSelectedCandidate] = useState(MOCK_CANDIDATES[0]);
-  const [selectedRoleId, setSelectedRoleId] = useState<number>(MOCK_ROLES[0].id);
-  const [selectedModelId, setSelectedModelId] = useState<number>(MOCK_AI_MODELS[2].id); // default GPT-4o Mini
-  const [agentName, setAgentName] = useState(MOCK_CANDIDATES[0].name);
+function errMsg(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
 
-  const selectedRole = MOCK_ROLES.find((r) => r.id === selectedRoleId)!;
-  const isDesignModelRequired = selectedRole.requires_design_capable_model;
+export const HiringScreen: React.FC<HiringScreenProps> = ({ addToast, onHired }) => {
+  const [roles, setRoles] = useState<RoleOut[]>([]);
+  const [skills, setSkills] = useState<SkillOut[]>([]);
+  const [models, setModels] = useState<AIModelOut[]>([]);
 
-  // Filter models based on capability rules
-  const availableModels = MOCK_AI_MODELS.map((model) => {
-    const isCapable = !isDesignModelRequired || model.capability_tags.includes("design");
-    return { ...model, isCapable };
-  });
+  const [selectedRoleId, setSelectedRoleId] = useState<number | null>(null);
+  const [selectedModelId, setSelectedModelId] = useState<number | null>(null);
+  const [selectedSkillIds, setSelectedSkillIds] = useState<number[]>([]);
 
-  // Handle candidate template selection
-  const handleSelectCandidate = (candidate: typeof MOCK_CANDIDATES[0]) => {
-    setSelectedCandidate(candidate);
-    setAgentName(candidate.name);
-    setSelectedRoleId(candidate.roleId);
+  const [agentName, setAgentName] = useState("");
+  const [personality, setPersonality] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
-    // Auto-adjust model if current selection is not capable for new role
-    const newRole = MOCK_ROLES.find((r) => r.id === candidate.roleId)!;
-    if (newRole.requires_design_capable_model) {
-      const capableModel = MOCK_AI_MODELS.find((m) => m.capability_tags.includes("design"));
-      if (capableModel) setSelectedModelId(capableModel.id);
+  // 役割・スキルのカタログを初回に一度だけ取得
+  useEffect(() => {
+    let active = true;
+    Promise.all([api.listRoles(), api.listSkills()])
+      .then(([roleList, skillList]) => {
+        if (!active) return;
+        setRoles(roleList);
+        setSkills(skillList);
+        if (roleList.length > 0) setSelectedRoleId(roleList[0].id);
+      })
+      .catch((e) => {
+        if (active) setLoadError(errMsg(e));
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  // 選択中の役割に応じたAIモデル一覧をサーバーから取得（design-capable制限はサーバー側で適用済み）
+  useEffect(() => {
+    if (selectedRoleId === null) return;
+    let active = true;
+    api
+      .listAiModels(selectedRoleId)
+      .then((list) => {
+        if (!active) return;
+        setModels(list);
+        setSelectedModelId((prev) => {
+          if (prev !== null && list.some((m) => m.id === prev)) return prev;
+          return list.length > 0 ? list[0].id : null;
+        });
+      })
+      .catch((e) => {
+        if (active) setLoadError(errMsg(e));
+      });
+    return () => {
+      active = false;
+    };
+  }, [selectedRoleId]);
+
+  const selectedRole = roles.find((r) => r.id === selectedRoleId) || null;
+
+  const toggleSkill = (id: number) => {
+    setSelectedSkillIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
+  };
+
+  const handleHireSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (selectedRoleId === null || selectedModelId === null || !agentName.trim()) return;
+
+    setSubmitting(true);
+    try {
+      await api.hireAgent({
+        name: agentName.trim(),
+        personality: personality.trim(),
+        role_id: selectedRoleId,
+        ai_model_id: selectedModelId,
+        skill_ids: selectedSkillIds,
+      });
+      addToast(`${agentName} を雇用しました！`, "success");
+      onHired();
+    } catch (err) {
+      addToast(`⚠️ 雇用に失敗しました: ${errMsg(err)}`, "info");
+    } finally {
+      setSubmitting(false);
     }
   };
 
-  const handleHireSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    const model = MOCK_AI_MODELS.find((m) => m.id === selectedModelId)!;
-    const role = MOCK_ROLES.find((r) => r.id === selectedRoleId)!;
-    const skills = selectedCandidate.skillsIds.map((id) => MOCK_SKILLS.find((s) => s.id === id)!);
-
-    const newAgent: Agent = {
-      id: Date.now(),
-      agent_id: `agent_${Date.now()}`,
-      name: agentName,
-      personality: selectedCandidate.personality,
-      role,
-      aiModel: model,
-      skills,
-      hiredAt: new Date().toISOString(),
-    };
-
-    onHire(newAgent);
-  };
+  if (loadError) {
+    return (
+      <div style={{ padding: "2rem", textAlign: "center", color: "var(--danger-color)" }}>
+        雇用データの取得に失敗しました: {loadError}
+      </div>
+    );
+  }
 
   return (
     <div className="hiring-container" style={{ display: "flex", flexDirection: "column", gap: "1.5rem" }}>
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 2fr", gap: "1.5rem" }}>
-        {/* Candidates Selection Panel */}
-        <div className="candidates-list" style={{ display: "flex", flexDirection: "column", gap: "0.8rem" }}>
-          <h4 style={{ margin: 0, color: "var(--secondary-color)" }}>1. 候補者を選択</h4>
-          {MOCK_CANDIDATES.map((c) => {
-            const isAlreadyHired = hiredAgents.some((h) => h.name === c.name);
-            return (
-              <button
-                key={c.name}
-                type="button"
-                className="btn-secondary"
-                disabled={isAlreadyHired}
-                style={{
-                  textAlign: "left",
-                  borderLeft: selectedCandidate.name === c.name ? "4px solid var(--secondary-color)" : "1px solid rgba(255,255,255,0.1)",
-                  background: selectedCandidate.name === c.name ? "rgba(255,255,255,0.08)" : "transparent",
-                  opacity: isAlreadyHired ? 0.5 : 1,
-                  display: "flex",
-                  justifyContent: "space-between",
-                  alignItems: "center"
-                }}
-                onClick={() => handleSelectCandidate(c)}
-              >
-                <span>{c.name}</span>
-                {isAlreadyHired && <span style={{ fontSize: "0.75rem", color: "var(--success-color)" }}>雇用中</span>}
-              </button>
-            );
-          })}
-        </div>
-
-        {/* Customization & Model Config Form */}
-        <form onSubmit={handleHireSubmit} className="glass-panel" style={{ padding: "1.2rem", display: "flex", flexDirection: "column", gap: "1rem" }}>
-          <h4 style={{ margin: 0, color: "var(--primary-color)" }}>2. 雇用設定</h4>
-          
+      <div style={{ maxWidth: "480px", margin: "0 auto", width: "100%" }}>
+        {/* すでにModal自体がglass-panelなので、ここでは二重に枠を付けずプレーンなフォームにする */}
+        <form onSubmit={handleHireSubmit} style={{ display: "flex", flexDirection: "column", gap: "1.25rem" }}>
           <div>
             <label style={{ display: "block", fontSize: "0.85rem", color: "var(--text-secondary)", marginBottom: "4px" }}>
-              名前 (変更可能)
+              名前
             </label>
             <input
               type="text"
               value={agentName}
               onChange={(e) => setAgentName(e.target.value)}
               required
+              placeholder="例: マッスル健太"
               style={{
                 width: "100%",
                 padding: "8px 12px",
                 background: "rgba(0,0,0,0.3)",
                 border: "1px solid var(--panel-border)",
                 borderRadius: "6px",
-                color: "#fff"
+                color: "#fff",
+              }}
+            />
+          </div>
+
+          <div>
+            <label style={{ display: "block", fontSize: "0.85rem", color: "var(--text-secondary)", marginBottom: "4px" }}>
+              性格
+            </label>
+            <textarea
+              value={personality}
+              onChange={(e) => setPersonality(e.target.value)}
+              rows={2}
+              placeholder="例: パワー系だが優しいバックエンド担当"
+              style={{
+                width: "100%",
+                padding: "8px 12px",
+                background: "rgba(0,0,0,0.3)",
+                border: "1px solid var(--panel-border)",
+                borderRadius: "6px",
+                color: "#fff",
+                resize: "vertical",
               }}
             />
           </div>
@@ -122,26 +153,18 @@ export const HiringScreen: React.FC<HiringScreenProps> = ({ onHire, hiredAgents 
               役割
             </label>
             <select
-              value={selectedRoleId}
-              onChange={(e) => {
-                const id = Number(e.target.value);
-                setSelectedRoleId(id);
-                const newRole = MOCK_ROLES.find((r) => r.id === id)!;
-                if (newRole.requires_design_capable_model) {
-                  const capableModel = MOCK_AI_MODELS.find((m) => m.capability_tags.includes("design"));
-                  if (capableModel) setSelectedModelId(capableModel.id);
-                }
-              }}
+              value={selectedRoleId ?? ""}
+              onChange={(e) => setSelectedRoleId(Number(e.target.value))}
               style={{
                 width: "100%",
                 padding: "8px 12px",
                 background: "rgba(0,0,0,0.3)",
                 border: "1px solid var(--panel-border)",
                 borderRadius: "6px",
-                color: "#fff"
+                color: "#fff",
               }}
             >
-              {MOCK_ROLES.map((r) => (
+              {roles.map((r) => (
                 <option key={r.id} value={r.id}>
                   {r.name} {r.requires_design_capable_model ? "(上流モデル必須)" : ""}
                 </option>
@@ -154,7 +177,14 @@ export const HiringScreen: React.FC<HiringScreenProps> = ({ onHire, hiredAgents 
               AIモデルの割り当て
             </label>
             <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
-              {availableModels.map((model) => (
+              {models.length === 0 && (
+                <div style={{ fontSize: "0.8rem", color: "var(--text-muted)" }}>
+                  {selectedRole?.requires_design_capable_model
+                    ? "この役割に対応する設計可能なモデルを読み込み中..."
+                    : "モデルを読み込み中..."}
+                </div>
+              )}
+              {models.map((model) => (
                 <label
                   key={model.id}
                   style={{
@@ -165,8 +195,7 @@ export const HiringScreen: React.FC<HiringScreenProps> = ({ onHire, hiredAgents 
                     borderRadius: "6px",
                     background: "rgba(0,0,0,0.2)",
                     border: selectedModelId === model.id ? "1px solid var(--primary-color)" : "1px solid transparent",
-                    opacity: model.isCapable ? 1 : 0.4,
-                    cursor: model.isCapable ? "pointer" : "not-allowed"
+                    cursor: "pointer",
                   }}
                 >
                   <input
@@ -174,7 +203,6 @@ export const HiringScreen: React.FC<HiringScreenProps> = ({ onHire, hiredAgents 
                     name="aiModel"
                     value={model.id}
                     checked={selectedModelId === model.id}
-                    disabled={!model.isCapable}
                     onChange={() => setSelectedModelId(model.id)}
                     style={{ marginTop: "3px" }}
                   />
@@ -184,22 +212,44 @@ export const HiringScreen: React.FC<HiringScreenProps> = ({ onHire, hiredAgents 
                     <div style={{ fontSize: "0.75rem", color: "var(--text-secondary)", marginTop: "2px" }}>
                       {model.description}
                     </div>
-                    {!model.isCapable && (
-                      <div style={{ fontSize: "0.7rem", color: "var(--danger-color)", fontWeight: "bold", marginTop: "2px" }}>
-                        ⚠️ 上流役職に必要なモデル（要設計能力タグ）
-                      </div>
-                    )}
                   </div>
                 </label>
               ))}
             </div>
           </div>
 
-          <div style={{ marginTop: "1rem" }}>
-            <button type="submit" className="btn-primary" style={{ width: "100%" }}>
-              {agentName} を雇用する (報酬から差し引き)
-            </button>
+          <div>
+            <label style={{ display: "block", fontSize: "0.85rem", color: "var(--text-secondary)", marginBottom: "4px" }}>
+              スキル (任意・複数選択可)
+            </label>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: "6px" }}>
+              {skills.map((s) => (
+                <button
+                  type="button"
+                  key={s.id}
+                  onClick={() => toggleSkill(s.id)}
+                  className="btn-secondary"
+                  style={{
+                    fontSize: "0.75rem",
+                    padding: "4px 10px",
+                    background: selectedSkillIds.includes(s.id) ? "var(--primary-color)" : undefined,
+                  }}
+                  title={s.description}
+                >
+                  {s.name}
+                </button>
+              ))}
+            </div>
           </div>
+
+          <button
+            type="submit"
+            className="btn-primary"
+            style={{ width: "100%", padding: "0.75rem" }}
+            disabled={submitting || !agentName.trim() || selectedRoleId === null || selectedModelId === null}
+          >
+            {submitting ? "雇用手続き中..." : `${agentName || "候補者"} を雇用する`}
+          </button>
         </form>
       </div>
     </div>

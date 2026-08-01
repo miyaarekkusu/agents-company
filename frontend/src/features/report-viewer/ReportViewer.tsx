@@ -1,9 +1,9 @@
 import React, { useState } from "react";
-import { type MeetingReport, type Artifact } from "../../mocks/tasks";
+import type { PendingReportOut, ArtifactOut } from "../../api/types";
 
 interface ReportViewerProps {
-  report?: MeetingReport;
-  artifact?: Artifact;
+  report?: PendingReportOut;
+  artifact?: ArtifactOut;
 }
 
 export const ReportViewer: React.FC<ReportViewerProps> = ({ report, artifact }) => {
@@ -18,11 +18,11 @@ export const ReportViewer: React.FC<ReportViewerProps> = ({ report, artifact }) 
     return (
       <div className="report-markdown" style={{ padding: "1rem", lineHeight: "1.6" }}>
         <div style={{ display: "flex", justifyContent: "space-between", borderBottom: "1px solid rgba(255,255,255,0.1)", paddingBottom: "8px", marginBottom: "1rem" }}>
-          <span>会議主催リーダー: <strong>{report.leaderName}</strong></span>
-          <span style={{ fontSize: "0.8rem", color: "var(--text-muted)" }}>{new Date(report.createdAt).toLocaleString()}</span>
+          <span>お題: <strong>{report.task_title}</strong></span>
+          <span style={{ fontSize: "0.8rem", color: "var(--text-muted)" }}>{new Date(report.created_at).toLocaleString()}</span>
         </div>
         <div style={{ whiteSpace: "pre-wrap", background: "rgba(0,0,0,0.2)", padding: "1.5rem", borderRadius: "8px", border: "1px solid rgba(255,255,255,0.05)" }}>
-          {report.content}
+          {report.report_content}
         </div>
       </div>
     );
@@ -37,9 +37,9 @@ export const ReportViewer: React.FC<ReportViewerProps> = ({ report, artifact }) 
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", borderBottom: "1px solid rgba(255,255,255,0.1)", paddingBottom: "8px" }}>
           <div>
             種類: <strong style={{ color: "var(--secondary-color)" }}>{artifact.type.toUpperCase()}</strong>
-            <span style={{ fontSize: "0.8rem", color: "var(--text-muted)", marginLeft: "12px" }}>作成者: {artifact.createdBy}</span>
+            <span style={{ fontSize: "0.8rem", color: "var(--text-muted)", marginLeft: "12px" }}>作成者: {artifact.agent_name ?? "不明"}</span>
           </div>
-          <span style={{ fontSize: "0.8rem", color: "var(--text-muted)" }}>{new Date(artifact.createdAt).toLocaleString()}</span>
+          <span style={{ fontSize: "0.8rem", color: "var(--text-muted)" }}>{new Date(artifact.created_at).toLocaleString()}</span>
         </div>
 
         {isWebsite && (

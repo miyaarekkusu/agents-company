@@ -103,22 +103,6 @@ def _status_label(status: str) -> str:
     return _STATUS_LABELS.get(status, status)
 
 
-def _build_system_prompt(name: str, personality: str, role_name: str, provider: str) -> str:
-    """名前・性格・役職からシステムプロンプトを組み立てる。
-
-    AGENTS.mdの自己認識ルール（「あなたは◯◯という名前の、〜ベースのエージェントです」）に
-    従い、モデルの自己紹介がClaude等の別AIを名乗ってしまう事故を防ぐ。
-    """
-    base = "DeepSeekベース" if provider == "deepseek" else f"{provider}ベース"
-    return (
-        f"あなたは{name}という名前の、{base}のエージェントです。あなたの役職は{role_name}です。\n\n"
-        f"あなたの性格・特徴は次の通りです: {personality}\n\n"
-        f"社長からのお題に対して、{role_name}としての専門性を活かし、誠実かつ分かりやすく応答してください。"
-        f"自己紹介を求められた場合は、自分が{name}という名前の{base}のエージェントであることを"
-        f"明示的に伝えてください。"
-    )
-
-
 async def _choose_agent(session, prompt: str):
     """登録済みエージェント一覧を表示し、選ばれたagent_idを返す（未登録・キャンセル時はNone）。"""
     agents = await agents_registry.list_agents(session)
@@ -249,7 +233,7 @@ async def hire_agent_flow() -> None:
             return
         skill_ids = await _select_skill_ids(session)
 
-        system_prompt = _build_system_prompt(name, personality, role.name, ai_model.provider)
+        system_prompt = hiring.build_system_prompt(name, personality, role.name, ai_model.provider)
         agent = await hiring.create_agent(
             session,
             name=name,
@@ -522,7 +506,7 @@ async def edit_agent_flow() -> None:
                 if not new_name:
                     print("未入力のため変更しませんでした。")
                     continue
-                system_prompt = _build_system_prompt(
+                system_prompt = hiring.build_system_prompt(
                     new_name, detail.agent.personality, detail.role_name, detail.agent.ai_model.provider
                 )
                 await hiring.update_agent(session, agent_id=agent_id, name=new_name, system_prompt=system_prompt)
@@ -532,7 +516,7 @@ async def edit_agent_flow() -> None:
                 if not new_personality:
                     print("未入力のため変更しませんでした。")
                     continue
-                system_prompt = _build_system_prompt(
+                system_prompt = hiring.build_system_prompt(
                     detail.agent.name, new_personality, detail.role_name, detail.agent.ai_model.provider
                 )
                 await hiring.update_agent(
@@ -548,7 +532,7 @@ async def edit_agent_flow() -> None:
                 if new_ai_model is None:
                     print("変更しませんでした。")
                     continue
-                system_prompt = _build_system_prompt(
+                system_prompt = hiring.build_system_prompt(
                     detail.agent.name, detail.agent.personality, new_role.name, new_ai_model.provider
                 )
                 await hiring.update_agent(
@@ -564,7 +548,7 @@ async def edit_agent_flow() -> None:
                 if new_ai_model is None:
                     print("変更しませんでした。")
                     continue
-                system_prompt = _build_system_prompt(
+                system_prompt = hiring.build_system_prompt(
                     detail.agent.name, detail.agent.personality, detail.role_name, new_ai_model.provider
                 )
                 await hiring.update_agent(
